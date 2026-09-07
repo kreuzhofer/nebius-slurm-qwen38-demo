@@ -5,7 +5,9 @@ Issues and specs for this repo live as GitHub issues in `kreuzhofer/nebius-slurm
 ## Conventions
 
 - **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
-- **Read an issue**: `gh issue view <number> --comments`, filtering comments by `jq` and also fetching labels.
+- **Read an issue**: `gh issue view <number> --json title,body,labels,comments --jq '{title, body, labels: [.labels[].name], comments: [.comments[].body]}'`.
+
+  **Do not use `gh issue view <number> --comments`.** On `gh` 2.45.0 against current GitHub it fails outright with `GraphQL: Projects (classic) is being deprecated ... (repository.issue.projectCards)`, because the plain-text view requests a sunset field. The `--json` form avoids that field and works. (Discovered the hard way in #8.)
 - **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
 - **Comment on an issue**: `gh issue comment <number> --body "..."`
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
@@ -31,7 +33,7 @@ Create a GitHub issue.
 
 ## When a skill says "fetch the relevant ticket"
 
-Run `gh issue view <number> --comments`.
+Run `gh issue view <number> --json title,body,labels,comments` (see the note above: the `--comments` flag is broken on this `gh` version).
 
 ## Wayfinding operations
 
