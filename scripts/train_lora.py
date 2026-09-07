@@ -95,7 +95,12 @@ def main():
         gradient_accumulation_steps=cfg["grad_accum"],
         learning_rate=learning_rate,
         weight_decay=0.01,
-        warmup_ratio=0.03,
+        # transformers v5 removed warmup_ratio and folded it into warmup_steps,
+        # which is now a float: >=1 means exact steps, and a value in [0, 1) is
+        # a ratio of total steps (get_warmup_steps does
+        # math.ceil(num_training_steps * warmup_steps)). So 0.03 here is exactly
+        # the old warmup_ratio=0.03, not an approximation of it.
+        warmup_steps=0.03,
         lr_scheduler_type="cosine",
         max_grad_norm=1.0,
         bf16=True,
@@ -169,6 +174,20 @@ def main():
                         ("rng_state", "optimizer", "scheduler", "training_args")
                     ):
                         shutil.copy2(src, output_dir)
+
+    # Hold every rank here until rank 0 has finished writing.
+    #
+    # save_model()'s state-dict gather is collective, but only rank 0 writes to
+    # disk. Without this barrier ranks 1..15 return from the gather, skip the
+    # is_world_process_zero() block, fall off the end of main() and exit -- their
+    # CUDA contexts tear down, the driver shuts down under rank 0 mid-write, and
+    # the process dies between safetensors' write and its atomic rename.
+    #
+    # Measured in job 811: the 870MB adapter was written completely and left as
+    # an unrenamed .tmp* file, with "CUDA driver error: unknown error" from
+    # _hasPrimaryContext at teardown. The recovery fallback above could not run
+    # either, because the process was already gone.
+    trainer.accelerator.wait_for_everyone()
 
 
 if __name__ == "__main__":
