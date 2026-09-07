@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Everything below lives on the cluster's shared filesystem, never in git:
+#   /mnt/data/qwen38-demo/{models,datasets,output,results,logs}
+logs/
+output/
+models/
+datasets/
+*.out
+*.err

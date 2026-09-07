@@ -1,0 +1,35 @@
+# Pinned stack for Qwen3.8-27B LoRA SFT + vLLM serving on NVIDIA B300 (sm_103).
+#
+# Install order matters -- see scripts/setup.sh. torch must come from the cu130
+# index FIRST, because:
+#   * B300 is compute capability 10.3 (sm_103). The default PyPI torch wheels and
+#     anything built for CUDA 12.4 contain no sm_103 kernels and will not run.
+#   * vllm==0.28.0 hard-pins `torch==2.13.0`. A local-version wheel
+#     (2.13.0+cu130) satisfies that pin, so installing it first stops pip from
+#     pulling the non-CUDA-13 build over the top.
+
+--extra-index-url https://download.pytorch.org/whl/cu130
+
+torch==2.13.0+cu130
+
+vllm==0.28.0
+transformers==5.16.1
+peft==0.20.0
+datasets==4.6.0
+accelerate==1.13.0
+
+# `kernels` fetches the fused Gated DeltaNet / causal-conv1d kernels from the Hub.
+# Without it, transformers silently falls back to the pure-PyTorch
+# `torch_chunk_gated_delta_rule` path for 48 of the model's 64 layers -- correct
+# but slow and memory-hungry. Requires use_kernels=True at load time.
+kernels>=0.16.0,<0.17
+
+# Evaluation chart only.
+matplotlib==3.11.0
+
+# OPTIONAL, and unverified by me -- see README "Known risks".
+# A determinism bug in the chunked gated-delta-rule kernel is reported to affect
+# sm_103 specifically, fixed in 0.5.2. Only relevant if you install the classic
+# fast path instead of using Hub kernels. Uncomment if you hit nondeterministic
+# loss or activation-checkpoint recompute failures.
+# flash-linear-attention==0.5.2
