@@ -1,20 +1,32 @@
 #!/bin/bash
 # =============================================================================
-# evaluate.sbatch -- score base vs fine-tuned on the held-out SQL test split.
+# evaluate.sbatch -- score a base model against one or more fine-tunes on the
+# held-out SQL test split.
 #
-# One GPU is plenty: 27B in bf16 is ~50GB against 275GB of HBM, and the two
-# models are loaded one at a time.
+# One GPU is plenty: 27B in bf16 is ~52GB against 275GB of HBM, and the models
+# are loaded one at a time.
+#
+# Every argument is passed straight through to evaluate.py, so any flag it
+# accepts works here. This used to take three positional arguments and forward
+# only three flags, which meant --prefix could not be set -- so the documented
+# full-fine-tune comparison silently overwrote the LoRA one's results and
+# labelled them as LoRA.
 #
 # HOW TO USE:
-#   # merged checkpoint (default):
+#   # base vs merged LoRA, 500 examples (the default):
 #   sbatch /mnt/data/qwen38-demo/scripts/evaluate.sbatch
 #
-#   # explicit paths:
+#   # three-way: base vs merged LoRA vs full fine-tune, one chart, base
+#   # generated once:
 #   sbatch /mnt/data/qwen38-demo/scripts/evaluate.sbatch \
-#       /mnt/data/qwen38-demo/models/Qwen3.8-27B \
-#       /mnt/data/qwen38-demo/output/qwen3.8-27b-sql
+#       --tuned-model /mnt/data/qwen38-demo/output/qwen3.8-27b-sql \
+#       --tuned-model /mnt/data/qwen38-demo/output/qwen3.8-27b-sql-full
 #
-# Results land in /mnt/data/qwen38-demo/results/
+#   # cheap smoke:
+#   sbatch /mnt/data/qwen38-demo/scripts/evaluate.sbatch --num-examples 100
+#
+# Results land in /mnt/data/qwen38-demo/results/, under a filename prefix
+# derived from the tuned model names unless --prefix says otherwise.
 # =============================================================================
 
 #SBATCH --job-name=qwen38-eval
@@ -30,17 +42,15 @@ set -euo pipefail
 export DEMO_DIR="${DEMO_DIR:-/mnt/data/qwen38-demo}"
 source "$DEMO_DIR/venv/bin/activate"
 
-BASE_MODEL=${1:-$DEMO_DIR/models/Qwen3.8-27B}
-TUNED_MODEL=${2:-$DEMO_DIR/output/qwen3.8-27b-sql}
-NUM_EXAMPLES=${3:-100}
+# With no arguments, score the base model against the merged LoRA checkpoint.
+# evaluate.py owns every other default, including --num-examples.
+if [ "$#" -eq 0 ]; then
+    set -- --base-model "$DEMO_DIR/models/Qwen3.8-27B" \
+           --tuned-model "$DEMO_DIR/output/qwen3.8-27b-sql"
+fi
 
 echo "=========================================="
-echo "Base  : $BASE_MODEL"
-echo "Tuned : $TUNED_MODEL"
-echo "N     : $NUM_EXAMPLES"
+echo "evaluate.py $*"
 echo "=========================================="
 
-python "$DEMO_DIR/scripts/evaluate.py" \
-    --base-model "$BASE_MODEL" \
-    --tuned-model "$TUNED_MODEL" \
-    --num-examples "$NUM_EXAMPLES"
+python "$DEMO_DIR/scripts/evaluate.py" "$@"

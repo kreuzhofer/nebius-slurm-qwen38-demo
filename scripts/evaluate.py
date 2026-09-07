@@ -1,41 +1,53 @@
 """
-evaluate.py -- base vs fine-tuned Qwen3.8-27B on exact-match SQL generation.
+evaluate.py -- compare a base model against one or more fine-tunes on
+exact-match SQL generation.
 
-Loads each model in turn, generates SQL for N held-out questions, and writes
-accuracy numbers, a side-by-side of the examples fine-tuning fixed, a bar
-chart, and a JSON dump.
+Takes an arbitrary number of models: one base (the reference every "fixed by
+fine-tuning" comparison is made against) and one or more tuned models. The base
+model's predictions are generated once no matter how many tuned models are
+scored against it, which is why a single three-way run is cheaper than two
+two-way runs -- as well as producing one chart instead of two that cannot be
+placed side by side.
 
-The test split uses the same seed (42) and ratio (0.05) as train_lora.py, so
-these examples were never trained on.
+Every label, chart title, filename prefix and Markdown heading is derived from
+the models actually passed. Nothing here says "LoRA": an earlier version
+hardcoded that, so pointing it at the full fine-tune produced a report that
+misattributed its own result, and both runs wrote to the same filenames so the
+second silently overwrote the first.
 
-Adapted from the Qwen3 demo (MIT). Qwen3.8-specific changes:
-  * dtype= instead of the deprecated torch_dtype=
-  * prompts come from sft_common.build_prompt, the same function the training
-    scripts use, so scoring cannot drift from training
-  * explicit <think> stripping, because a stray thinking block would otherwise
-    be scored as the SQL
+The test split comes from sft_common.load_split and the prompts from
+sft_common.build_prompt, so scoring cannot drift from training. Qwen3.8
+specifics: dtype= rather than the deprecated torch_dtype=, and explicit <think>
+stripping, because thinking is this model's default and a stray reasoning block
+would otherwise be scored as the SQL.
 """
 
 import argparse
 import json
 import os
+import re
 
 import matplotlib
 import torch
-from datasets import load_from_disk
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM
 
-from sft_common import build_prompt
+from sft_common import build_prompt, load_split, load_tokenizer
 
 matplotlib.use("Agg")  # headless
 import matplotlib.pyplot as plt  # noqa: E402
+
+# Base first, then one colour per tuned model, cycled if there are more.
+BASE_COLOR = "#2196F3"
+TUNED_COLORS = ["#4CAF50", "#FF9800", "#9C27B0", "#00BCD4", "#E91E63"]
 
 
 def generate_sql(model, tokenizer, schema, question, max_new_tokens=256):
     # Identical prompt to training, including enable_thinking=False and the
     # pre-filled empty think block.
     text = build_prompt(tokenizer, schema, question)
-    inputs = tokenizer(text, return_tensors="pt", add_special_tokens=False).to(model.device)
+    inputs = tokenizer(text, return_tensors="pt", add_special_tokens=False).to(
+        model.device
+    )
 
     with torch.no_grad():
         out = model.generate(
@@ -60,17 +72,17 @@ def normalize_sql(sql):
     return " ".join(sql.lower().strip().rstrip(";").split())
 
 
-def evaluate_model(model_path, test_data, label):
+def evaluate_model(model_path, test_data, label, max_new_tokens):
     print(f"\n{'=' * 60}\nEvaluating: {label}\nPath: {model_path}\n{'=' * 60}")
 
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    # ~50GB of bf16 weights; comfortable on one 275GB B300.
+    tokenizer = load_tokenizer(model_path)  # shared pad-token handling
+    # Load exactly as sft_common.load_model does, attn_implementation included:
+    # scoring a model under a different attention implementation than it was
+    # trained with is a silent way to make the comparison meaningless.
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         dtype=torch.bfloat16,
+        attn_implementation="sdpa",
         device_map="auto",
         use_kernels=True,
     )
@@ -78,7 +90,11 @@ def evaluate_model(model_path, test_data, label):
 
     preds = []
     for i, ex in enumerate(test_data):
-        preds.append(generate_sql(model, tokenizer, ex["context"], ex["question"]))
+        preds.append(
+            generate_sql(
+                model, tokenizer, ex["context"], ex["question"], max_new_tokens
+            )
+        )
         if i == 0 or (i + 1) % 10 == 0:
             print(f"  [{i + 1}/{len(test_data)}] {ex['question'][:60]}...")
             print(f"       -> {preds[-1][:80]}")
@@ -88,110 +104,184 @@ def evaluate_model(model_path, test_data, label):
     return preds
 
 
+def slug(path):
+    """Filesystem- and title-safe stem for a model path."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", os.path.basename(path.rstrip("/")))
+
+
+def resolve_labels(models, explicit):
+    """
+    Derive one display label per (path) in `models`, base first.
+
+    Explicit --label values win, in order. Otherwise the basename is used, with
+    " (base)" appended to the reference model so a chart is readable without
+    knowing which bar is which. Duplicate basenames get an index suffix rather
+    than two identically-labelled bars.
+    """
+    if explicit:
+        if len(explicit) != len(models):
+            raise SystemExit(
+                f"--label given {len(explicit)} times but {len(models)} models "
+                f"were passed (1 base + {len(models) - 1} tuned)"
+            )
+        return list(explicit)
+
+    labels = [f"{slug(models[0])} (base)"] + [slug(p) for p in models[1:]]
+    seen = {}
+    out = []
+    for lab in labels:
+        seen[lab] = seen.get(lab, 0) + 1
+        out.append(lab if seen[lab] == 1 else f"{lab} #{seen[lab]}")
+    return out
+
+
 def main():
     demo_dir = os.environ.get("DEMO_DIR", "/mnt/data/qwen38-demo")
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Base vs one or more fine-tuned models, exact-match SQL."
+    )
     parser.add_argument("--base-model", default=f"{demo_dir}/models/Qwen3.8-27B")
-    parser.add_argument("--tuned-model", default=f"{demo_dir}/output/qwen3.8-27b-sql")
+    parser.add_argument(
+        "--tuned-model",
+        action="append",
+        default=None,
+        help="Repeat for each fine-tune to score. Defaults to the merged LoRA "
+        "checkpoint if not given.",
+    )
+    parser.add_argument(
+        "--label",
+        action="append",
+        default=None,
+        help="Optional display label, once per model, base first. Derived from "
+        "the paths if omitted.",
+    )
     parser.add_argument("--dataset", default=f"{demo_dir}/datasets/sql-create-context")
-    parser.add_argument("--num-examples", type=int, default=100)
+    parser.add_argument("--num-examples", type=int, default=500)
+    parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--results-dir", default=f"{demo_dir}/results")
-    parser.add_argument("--prefix", default="qwen3.8-27b-lora_")
+    parser.add_argument(
+        "--prefix",
+        default=None,
+        help="Output filename prefix. Derived from the tuned model names if "
+        "omitted, so separate comparisons cannot overwrite each other.",
+    )
     args = parser.parse_args()
+
+    tuned = args.tuned_model or [f"{demo_dir}/output/qwen3.8-27b-sql"]
+    paths = [args.base_model] + tuned
+    labels = resolve_labels(paths, args.label)
+    prefix = args.prefix if args.prefix is not None else "_".join(
+        slug(p) for p in tuned
+    ) + "_"
 
     os.makedirs(args.results_dir, exist_ok=True)
 
-    dataset = load_from_disk(args.dataset)["train"]
-    test_split = dataset.train_test_split(test_size=0.05, seed=42)["test"]
+    test_split = load_split(args.dataset)["test"]
     num = min(args.num_examples, len(test_split))
     test_data = test_split.select(range(num))
     ground_truth = [ex["answer"] for ex in test_data]
-    print(f"Evaluating on {num} held-out examples")
+    norm_truth = [normalize_sql(g) for g in ground_truth]
+    print(f"Evaluating {len(paths)} models on {num} held-out examples")
+    for lab, p in zip(labels, paths):
+        print(f"  {lab:40} {p}")
 
-    base_preds = evaluate_model(args.base_model, test_data, "Base model")
-    tuned_preds = evaluate_model(args.tuned_model, test_data, "Fine-tuned model")
+    # One pass per model; the base is generated once however many tuned models
+    # are being compared against it.
+    preds = {}
+    for lab, path in zip(labels, paths):
+        preds[lab] = evaluate_model(path, test_data, lab, args.max_new_tokens)
 
-    base_correct = sum(
-        normalize_sql(p) == normalize_sql(g) for p, g in zip(base_preds, ground_truth)
-    )
-    tuned_correct = sum(
-        normalize_sql(p) == normalize_sql(g) for p, g in zip(tuned_preds, ground_truth)
-    )
-    base_acc = base_correct / num * 100
-    tuned_acc = tuned_correct / num * 100
+    norm = {lab: [normalize_sql(p) for p in preds[lab]] for lab in labels}
+    correct = {lab: sum(n == g for n, g in zip(norm[lab], norm_truth)) for lab in labels}
+    acc = {lab: correct[lab] / num * 100 for lab in labels}
+
+    base_label, tuned_labels = labels[0], labels[1:]
+    width = max(len(lab) for lab in labels)
 
     print(f"\n{'=' * 60}")
     print(f"  RESULTS ({num} examples)")
     print(f"{'=' * 60}")
-    print(f"  Base       : {base_acc:5.1f}%  ({base_correct}/{num})")
-    print(f"  Fine-tuned : {tuned_acc:5.1f}%  ({tuned_correct}/{num})")
-    print(f"  Improvement: {tuned_acc - base_acc:+5.1f}%")
+    print(f"  {base_label:{width}} : {acc[base_label]:5.1f}%  ({correct[base_label]}/{num})")
+    for lab in tuned_labels:
+        delta = acc[lab] - acc[base_label]
+        print(f"  {lab:{width}} : {acc[lab]:5.1f}%  ({correct[lab]}/{num})  {delta:+5.1f}pp")
     print(f"{'=' * 60}")
 
-    fixed = [
-        i
-        for i in range(num)
-        if normalize_sql(base_preds[i]) != normalize_sql(ground_truth[i])
-        and normalize_sql(tuned_preds[i]) == normalize_sql(ground_truth[i])
-    ]
-
-    print("\nExamples fine-tuning fixed:\n")
-    for i in fixed[:5]:
-        print(f"  Example {i + 1}:")
-        print(f"    Question    : {test_data[i]['question']}")
-        print(f"    Ground truth: {ground_truth[i]}")
-        print(f"    Base        : {base_preds[i]}")
-        print(f"    Fine-tuned  : {tuned_preds[i]}\n")
-    if not fixed:
-        print("  (none -- try more examples)")
+    # Examples each fine-tune fixed, measured against the base model.
+    fixed = {
+        lab: [
+            i
+            for i in range(num)
+            if norm[base_label][i] != norm_truth[i] and norm[lab][i] == norm_truth[i]
+        ]
+        for lab in tuned_labels
+    }
+    for lab in tuned_labels:
+        print(f"\nExamples {lab} fixed ({len(fixed[lab])} total):\n")
+        for i in fixed[lab][:5]:
+            print(f"  Example {i + 1}:")
+            print(f"    Question    : {test_data[i]['question']}")
+            print(f"    Ground truth: {ground_truth[i]}")
+            print(f"    {base_label}: {preds[base_label][i]}")
+            print(f"    {lab}: {preds[lab][i]}\n")
+        if not fixed[lab]:
+            print("  (none)\n")
 
     # --- Chart -------------------------------------------------------------
-    fig, ax = plt.subplots(figsize=(8, 5))
-    bars = ax.bar(
-        ["Base Qwen3.8-27B", "LoRA fine-tuned"],
-        [base_acc, tuned_acc],
-        color=["#2196F3", "#4CAF50"],
-        width=0.5,
-    )
+    colors = [BASE_COLOR] + [
+        TUNED_COLORS[i % len(TUNED_COLORS)] for i in range(len(tuned_labels))
+    ]
+    fig, ax = plt.subplots(figsize=(max(8, 2.6 * len(labels)), 5))
+    bars = ax.bar(labels, [acc[lab] for lab in labels], color=colors, width=0.5)
     ax.set_ylabel("Exact Match Accuracy (%)")
-    ax.set_title("SQL Generation: Qwen3.8-27B base vs LoRA fine-tuned")
+    ax.set_title(f"SQL generation, {num} held-out examples")
     ax.set_ylim(0, 100)
-    for bar, acc in zip(bars, [base_acc, tuned_acc]):
+    for bar, lab in zip(bars, labels):
         ax.text(
             bar.get_x() + bar.get_width() / 2,
             bar.get_height() + 1.5,
-            f"{acc:.1f}%",
+            f"{acc[lab]:.1f}%",
             ha="center",
             fontweight="bold",
-            fontsize=14,
+            fontsize=13,
         )
+    plt.xticks(rotation=15, ha="right")
     plt.tight_layout()
-    chart_path = os.path.join(args.results_dir, f"{args.prefix}accuracy_comparison.png")
+    chart_path = os.path.join(args.results_dir, f"{prefix}accuracy_comparison.png")
     plt.savefig(chart_path, dpi=150)
     print(f"Chart  : {chart_path}")
 
     # --- JSON --------------------------------------------------------------
-    results_path = os.path.join(args.results_dir, f"{args.prefix}results.json")
+    results_path = os.path.join(args.results_dir, f"{prefix}results.json")
     with open(results_path, "w") as f:
         json.dump(
             {
-                "base_model": args.base_model,
-                "tuned_model": args.tuned_model,
                 "num_examples": num,
-                "base_accuracy_pct": round(base_acc, 2),
-                "tuned_accuracy_pct": round(tuned_acc, 2),
-                "improvement_pct": round(tuned_acc - base_acc, 2),
+                "base_label": base_label,
+                "models": [
+                    {
+                        "label": lab,
+                        "path": path,
+                        "is_base": lab == base_label,
+                        "accuracy_pct": round(acc[lab], 2),
+                        "correct": correct[lab],
+                        "improvement_pct": round(acc[lab] - acc[base_label], 2),
+                        "fixed_vs_base": len(fixed.get(lab, [])),
+                    }
+                    for lab, path in zip(labels, paths)
+                ],
                 "examples": [
                     {
                         "question": test_data[i]["question"],
                         "schema": test_data[i]["context"],
                         "ground_truth": ground_truth[i],
-                        "base_prediction": base_preds[i],
-                        "tuned_prediction": tuned_preds[i],
-                        "base_correct": normalize_sql(base_preds[i])
-                        == normalize_sql(ground_truth[i]),
-                        "tuned_correct": normalize_sql(tuned_preds[i])
-                        == normalize_sql(ground_truth[i]),
+                        "predictions": {
+                            lab: {
+                                "sql": preds[lab][i],
+                                "correct": norm[lab][i] == norm_truth[i],
+                            }
+                            for lab in labels
+                        },
                     }
                     for i in range(num)
                 ],
@@ -202,24 +292,28 @@ def main():
     print(f"JSON   : {results_path}")
 
     # --- Markdown ----------------------------------------------------------
-    md_path = os.path.join(args.results_dir, f"{args.prefix}results.md")
+    md_path = os.path.join(args.results_dir, f"{prefix}results.md")
     with open(md_path, "w") as f:
-        f.write(f"# Qwen3.8-27B LoRA SQL results ({num} held-out examples)\n\n")
-        f.write("| | Model | Accuracy | Correct |\n|---|---|---|---|\n")
-        f.write(f"| Base | `{args.base_model}` | {base_acc:.1f}% | {base_correct}/{num} |\n")
-        f.write(
-            f"| Fine-tuned | `{args.tuned_model}` | {tuned_acc:.1f}% | {tuned_correct}/{num} |\n\n"
-        )
-        f.write(f"**Improvement: {tuned_acc - base_acc:+.1f}%**\n\n")
-        f.write("## Examples fine-tuning fixed\n\n")
-        for i in fixed[:5]:
-            f.write(f"### Example {i + 1}\n\n")
-            f.write(f"**Question:** {test_data[i]['question']}\n\n")
-            f.write(f"**Ground truth:** `{ground_truth[i]}`\n\n")
-            f.write(f"**Base:** `{base_preds[i]}`\n\n")
-            f.write(f"**Fine-tuned:** `{tuned_preds[i]}`\n\n")
-        if not fixed:
-            f.write("(none -- try more examples)\n")
+        f.write(f"# SQL exact-match results ({num} held-out examples)\n\n")
+        f.write("| Model | Path | Accuracy | Correct | vs base |\n")
+        f.write("|---|---|---|---|---|\n")
+        for lab, path in zip(labels, paths):
+            delta = "-" if lab == base_label else f"{acc[lab] - acc[base_label]:+.1f}pp"
+            f.write(
+                f"| {lab} | `{path}` | {acc[lab]:.1f}% | "
+                f"{correct[lab]}/{num} | {delta} |\n"
+            )
+        f.write("\n")
+        for lab in tuned_labels:
+            f.write(f"## Examples {lab} fixed ({len(fixed[lab])} total)\n\n")
+            for i in fixed[lab][:5]:
+                f.write(f"### Example {i + 1}\n\n")
+                f.write(f"**Question:** {test_data[i]['question']}\n\n")
+                f.write(f"**Ground truth:** `{ground_truth[i]}`\n\n")
+                f.write(f"**{base_label}:** `{preds[base_label][i]}`\n\n")
+                f.write(f"**{lab}:** `{preds[lab][i]}`\n\n")
+            if not fixed[lab]:
+                f.write("(none)\n\n")
     print(f"Markdown: {md_path}")
 
 

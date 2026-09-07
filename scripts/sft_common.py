@@ -103,11 +103,40 @@ def build_example(example, tokenizer):
     }
 
 
+# The 95/5 split is defined exactly once, here. Training and evaluation must
+# agree on it or "held out" means nothing -- evaluate.py used to re-declare the
+# same two constants, which is a drift waiting to happen rather than the
+# guarantee this module is supposed to provide.
+SPLIT_TEST_SIZE = 0.05
+SPLIT_SEED = 42
+
+
+def load_split(dataset_path):
+    """
+    Load the dataset and apply the canonical 95/5 split, untokenized.
+
+    Returns a DatasetDict with "train" and "test". Callers needing text (like
+    evaluate.py) use it directly; prepare_datasets() tokenizes on top of it.
+
+    disable_caching() lives here rather than at each call site: the dataset is
+    on shared NFS and train_test_split writes its index mapping as a
+    cache-*.arrow file into that directory, which with 16 ranks means 16
+    concurrent writers. It cannot take keep_in_memory itself -- datasets 4.6.0
+    forwards both that and an auto-derived indices_cache_file_name to select(),
+    which rejects the pair.
+    """
+    from datasets import disable_caching, load_from_disk
+
+    disable_caching()
+    dataset = load_from_disk(dataset_path)["train"]
+    return dataset.train_test_split(test_size=SPLIT_TEST_SIZE, seed=SPLIT_SEED)
+
+
 def prepare_datasets(
     dataset_path, tokenizer, max_seq_len, is_main, max_eval_examples=-1
 ):
     """
-    Load, split 95/5 on seed 42 (same as evaluate.py), tokenize, length-filter.
+    Tokenize and length-filter the canonical split from load_split().
 
     Measured at MAX_SEQ_LEN=1024: the split yields 74,648 train / 3,929 eval and
     the length filter drops nothing, so the "dropped N of M" line below never
@@ -117,21 +146,7 @@ def prepare_datasets(
     max_eval_examples caps the eval split (-1 = all of it), so a short run can
     evaluate without paying for all 3,929 examples.
     """
-    from datasets import disable_caching, load_from_disk
-
-    # Nothing here may write to the dataset directory: it lives on shared NFS
-    # and all 16 ranks run this same code at the same time. Measured without
-    # this: train_test_split alone drops two cache-*.arrow files into
-    # datasets/sql-create-context/train/ on every run.
-    #
-    # disable_caching() rather than keep_in_memory=True on the split, because
-    # train_test_split in datasets 4.6.0 forwards both keep_in_memory and an
-    # auto-derived indices_cache_file_name to select(), which rejects the pair
-    # with "Please use either `keep_in_memory` or `indices_cache_file_name`".
-    disable_caching()
-
-    dataset = load_from_disk(dataset_path)["train"]
-    split = dataset.train_test_split(test_size=0.05, seed=42)
+    split = load_split(dataset_path)
 
     def prepare(ds, desc):
         # keep_in_memory=True is load-bearing here, not an optimisation. Without
