@@ -31,7 +31,8 @@ export OUTPUT_DIR="$DEMO_DIR/output/qwen3.8-27b-sql-lora"
 export DATASET_PATH="$DEMO_DIR/datasets/sql-create-context"
 
 # 8 per GPU x 16 GPUs x 1 accum = effective batch 128, matching the Qwen3-era
-# runs so the accuracy numbers stay comparable. ~583 steps for 74.6k examples.
+# runs so the accuracy numbers stay comparable. Measured: 584 optimizer steps
+# over the 74,648-example train split (78,577 raw, less the 5% eval split).
 #
 # There is a lot of headroom here: B300 has 275GB HBM against roughly 3GB/rank
 # of sharded frozen base weights, so activations dominate. Raise
@@ -41,6 +42,21 @@ export GRADIENT_ACCUMULATION_STEPS=1
 export NUM_EPOCHS=1
 export LEARNING_RATE=2e-4            # LoRA tolerates ~10x the full-FT rate
 export MAX_SEQ_LEN=1024
+
+
+# --- Short-run knobs ---------------------------------------------------------
+# Defaults reproduce a full single-epoch run exactly. Override per-submission:
+#   MAX_STEPS=25 SAVE_STEPS=10 MAX_EVAL_EXAMPLES=200 \
+#       sbatch --export=ALL scripts/train_lora.sbatch
+export MAX_STEPS="${MAX_STEPS:--1}"           # -1 = run NUM_EPOCHS epochs
+export SAVE_STEPS="${SAVE_STEPS:-500}"
+export EVAL_STEPS="${EVAL_STEPS:-$SAVE_STEPS}"
+export MAX_EVAL_EXAMPLES="${MAX_EVAL_EXAMPLES:--1}"   # -1 = all 3,929
+
+# Every rank imports sft_common from shared NFS, so without this all 16 race to
+# write .pyc files into $DEMO_DIR/scripts/__pycache__. Same class of problem as
+# TRITON_CACHE_DIR above and disable_caching() in prepare_datasets.
+export PYTHONDONTWRITEBYTECODE=1
 
 export LORA_R=32
 export LORA_ALPHA=64

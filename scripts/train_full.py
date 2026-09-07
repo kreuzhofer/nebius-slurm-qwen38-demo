@@ -48,13 +48,15 @@ def main():
     # gathering unsharded weights across all 16 ranks. Doing that every
     # save_steps is what blew the distributed timeout in the Qwen3-era pipeline.
     #
-    # Default here is "no": for a single-epoch ~583-step demo run, write the
+    # Default here is "no": for a single-epoch demo run -- 584 optimizer steps,
+    # measured, at effective batch 128 over the 74,648-example train split --
+    # write the
     # model once at the end and skip mid-run checkpoints entirely. The trade-off
     # is that a crash means restarting rather than resuming -- set
     # SAVE_STRATEGY=steps (and SAVE_STEPS) if you want resumability and can
     # afford the I/O.
     save_strategy = os.environ.get("SAVE_STRATEGY", "no")
-    save_steps = int(os.environ.get("SAVE_STEPS", "500"))
+    save_steps = cfg["save_steps"]
 
     if is_main:
         print(f"Model      : {cfg['model_path']}")
@@ -63,6 +65,10 @@ def main():
         print(f"Batch      : {cfg['per_device_bs']}/GPU x {cfg['grad_accum']} accum")
         print(f"LR         : {learning_rate}")
         print(f"Max seq len: {cfg['max_seq_len']}")
+        if cfg["max_steps"] > 0:
+            print(f"Steps      : capped at {cfg['max_steps']} (MAX_STEPS set)")
+        else:
+            print(f"Steps      : {cfg['num_epochs']} epoch(s), no cap")
         print(f"Save       : strategy={save_strategy} steps={save_steps}")
 
     tokenizer = load_tokenizer(cfg["model_path"])
@@ -71,6 +77,9 @@ def main():
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=cfg["num_epochs"],
+        # -1 by default = use num_train_epochs. MAX_STEPS caps the run and then
+        # takes precedence, which is what makes a cheap smoke run possible.
+        max_steps=cfg["max_steps"],
         per_device_train_batch_size=cfg["per_device_bs"],
         per_device_eval_batch_size=cfg["per_device_bs"],
         gradient_accumulation_steps=cfg["grad_accum"],
@@ -94,7 +103,7 @@ def main():
         ddp_timeout=7200,
         logging_steps=10,
         eval_strategy="steps",
-        eval_steps=500,
+        eval_steps=cfg["eval_steps"],
         save_strategy=save_strategy,
         **({"save_steps": save_steps, "save_total_limit": 1}
            if save_strategy != "no" else {}),
@@ -103,7 +112,11 @@ def main():
     )
 
     train_ds, eval_ds = prepare_datasets(
-        cfg["dataset_path"], tokenizer, cfg["max_seq_len"], is_main
+        cfg["dataset_path"],
+        tokenizer,
+        cfg["max_seq_len"],
+        is_main,
+        cfg["max_eval_examples"],
     )
     if is_main:
         print(f"Train examples: {len(train_ds)}, eval examples: {len(eval_ds)}")

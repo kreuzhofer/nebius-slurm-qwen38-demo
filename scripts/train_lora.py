@@ -59,6 +59,11 @@ def main():
         print(f"Batch      : {cfg['per_device_bs']}/GPU x {cfg['grad_accum']} accum")
         print(f"LoRA       : r={lora_r}, alpha={lora_alpha}, dropout={lora_dropout}")
         print(f"Max seq len: {cfg['max_seq_len']}")
+        if cfg["max_steps"] > 0:
+            print(f"Steps      : capped at {cfg['max_steps']} (MAX_STEPS set)")
+        else:
+            print(f"Steps      : {cfg['num_epochs']} epoch(s), no cap")
+        print(f"Save/eval  : every {cfg['save_steps']}/{cfg['eval_steps']} steps")
 
     tokenizer = load_tokenizer(cfg["model_path"])
     model = load_model(cfg["model_path"])
@@ -82,6 +87,9 @@ def main():
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=cfg["num_epochs"],
+        # -1 by default, which is how transformers spells "use num_train_epochs".
+        # Set MAX_STEPS to cap the run; it then takes precedence over epochs.
+        max_steps=cfg["max_steps"],
         per_device_train_batch_size=cfg["per_device_bs"],
         per_device_eval_batch_size=cfg["per_device_bs"],
         gradient_accumulation_steps=cfg["grad_accum"],
@@ -103,16 +111,20 @@ def main():
         fsdp_config=fsdp_config(state_dict_type="FULL_STATE_DICT"),
         logging_steps=10,
         eval_strategy="steps",
-        eval_steps=500,
+        eval_steps=cfg["eval_steps"],
         save_strategy="steps",
-        save_steps=500,
+        save_steps=cfg["save_steps"],
         save_total_limit=2,
         dataloader_num_workers=4,
         report_to="none",
     )
 
     train_ds, eval_ds = prepare_datasets(
-        cfg["dataset_path"], tokenizer, cfg["max_seq_len"], is_main
+        cfg["dataset_path"],
+        tokenizer,
+        cfg["max_seq_len"],
+        is_main,
+        cfg["max_eval_examples"],
     )
     if is_main:
         print(f"Train examples: {len(train_ds)}, eval examples: {len(eval_ds)}")

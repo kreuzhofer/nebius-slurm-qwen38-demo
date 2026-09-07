@@ -56,6 +56,21 @@ export MAX_SEQ_LEN=1024
 # train_full.py -- a FULL_STATE_DICT gather of a 27B model is ~54GB and doing it
 # every few hundred steps is what blew the distributed timeout in the Qwen3-era
 # pipeline. Override to trade I/O for resumability.
+
+# --- Short-run knobs ---------------------------------------------------------
+# Defaults reproduce a full single-epoch run exactly. Override per-submission:
+#   MAX_STEPS=25 SAVE_STEPS=10 MAX_EVAL_EXAMPLES=200 \
+#       sbatch --export=ALL scripts/train_full.sbatch
+export MAX_STEPS="${MAX_STEPS:--1}"           # -1 = run NUM_EPOCHS epochs
+export SAVE_STEPS="${SAVE_STEPS:-500}"
+export EVAL_STEPS="${EVAL_STEPS:-$SAVE_STEPS}"
+export MAX_EVAL_EXAMPLES="${MAX_EVAL_EXAMPLES:--1}"   # -1 = all 3,929
+
+# Every rank imports sft_common from shared NFS, so without this all 16 race to
+# write .pyc files into $DEMO_DIR/scripts/__pycache__. Same class of problem as
+# TRITON_CACHE_DIR above and disable_caching() in prepare_datasets.
+export PYTHONDONTWRITEBYTECODE=1
+
 export SAVE_STRATEGY="${SAVE_STRATEGY:-no}"
 export SAVE_STEPS="${SAVE_STEPS:-500}"
 

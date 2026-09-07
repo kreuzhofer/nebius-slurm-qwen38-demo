@@ -103,8 +103,20 @@ def build_example(example, tokenizer):
     }
 
 
-def prepare_datasets(dataset_path, tokenizer, max_seq_len, is_main):
-    """Load, split 95/5 on seed 42 (same as evaluate.py), tokenize, length-filter."""
+def prepare_datasets(
+    dataset_path, tokenizer, max_seq_len, is_main, max_eval_examples=-1
+):
+    """
+    Load, split 95/5 on seed 42 (same as evaluate.py), tokenize, length-filter.
+
+    Measured at MAX_SEQ_LEN=1024: the split yields 74,648 train / 3,929 eval and
+    the length filter drops nothing, so the "dropped N of M" line below never
+    prints at the shipped setting. It stays because a smaller MAX_SEQ_LEN would
+    silently discard answers otherwise.
+
+    max_eval_examples caps the eval split (-1 = all of it), so a short run can
+    evaluate without paying for all 3,929 examples.
+    """
     from datasets import disable_caching, load_from_disk
 
     # Nothing here may write to the dataset directory: it lives on shared NFS
@@ -142,7 +154,13 @@ def prepare_datasets(dataset_path, tokenizer, max_seq_len, is_main):
             print(f"  {desc}: dropped {before - len(ds)} of {before} over {max_seq_len} tokens")
         return ds.remove_columns(["length"])
 
-    return prepare(split["train"], "train"), prepare(split["test"], "eval")
+    train_ds = prepare(split["train"], "train")
+    eval_ds = prepare(split["test"], "eval")
+    if 0 <= max_eval_examples < len(eval_ds):
+        if is_main:
+            print(f"  eval: capped to {max_eval_examples} of {len(eval_ds)} examples")
+        eval_ds = eval_ds.select(range(max_eval_examples))
+    return train_ds, eval_ds
 
 
 def load_tokenizer(model_path):
@@ -210,6 +228,25 @@ def env_config():
         "grad_accum": int(os.environ.get("GRADIENT_ACCUMULATION_STEPS", "1")),
         "num_epochs": int(os.environ.get("NUM_EPOCHS", "1")),
         "max_seq_len": int(os.environ.get("MAX_SEQ_LEN", "1024")),
+        # Short-run knobs. MAX_STEPS=-1 means "run NUM_EPOCHS epochs", which is
+        # how transformers itself spells "no step cap" -- so the default here is
+        # exactly the previous behaviour: one full epoch, 584 optimizer steps at
+        # effective batch 128 over the 74,648-example train split.
+        #
+        # A real smoke run is MAX_STEPS=25 SAVE_STEPS=10, which exercises the
+        # checkpoint-save path twice in a couple of minutes instead of once at
+        # the very end of a full run.
+        "max_steps": int(os.environ.get("MAX_STEPS", "-1")),
+        "save_steps": int(os.environ.get("SAVE_STEPS", "500")),
+        # Defaults to SAVE_STEPS so a short run evaluates as often as it saves;
+        # override independently when that is too expensive.
+        "eval_steps": int(
+            os.environ.get("EVAL_STEPS", os.environ.get("SAVE_STEPS", "500"))
+        ),
+        # -1 = the whole 3,929-example eval split. A 25-step smoke run that
+        # evaluates over all of it spends far longer evaluating than training,
+        # so cap it there.
+        "max_eval_examples": int(os.environ.get("MAX_EVAL_EXAMPLES", "-1")),
         "rank": rank,
         "is_main": rank == 0,
     }
