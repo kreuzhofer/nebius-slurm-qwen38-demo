@@ -105,21 +105,39 @@ def build_example(example, tokenizer):
 
 def prepare_datasets(dataset_path, tokenizer, max_seq_len, is_main):
     """Load, split 95/5 on seed 42 (same as evaluate.py), tokenize, length-filter."""
-    from datasets import load_from_disk
+    from datasets import disable_caching, load_from_disk
+
+    # Nothing here may write to the dataset directory: it lives on shared NFS
+    # and all 16 ranks run this same code at the same time. Measured without
+    # this: train_test_split alone drops two cache-*.arrow files into
+    # datasets/sql-create-context/train/ on every run.
+    #
+    # disable_caching() rather than keep_in_memory=True on the split, because
+    # train_test_split in datasets 4.6.0 forwards both keep_in_memory and an
+    # auto-derived indices_cache_file_name to select(), which rejects the pair
+    # with "Please use either `keep_in_memory` or `indices_cache_file_name`".
+    disable_caching()
 
     dataset = load_from_disk(dataset_path)["train"]
     split = dataset.train_test_split(test_size=0.05, seed=42)
 
     def prepare(ds, desc):
+        # keep_in_memory=True is load-bearing here, not an optimisation. Without
+        # it, every one of the 16 ranks writes an Arrow cache file into the
+        # dataset directory on shared NFS at the same time, which is a
+        # documented route to pyarrow SIGBUS. The tokenized set is small enough
+        # (~78k short SQL examples) that holding it in RAM is free on a 2.5TB
+        # node.
         ds = ds.map(
             lambda x: build_example(x, tokenizer),
             remove_columns=ds.column_names,
             desc=f"Tokenizing {desc}",
+            keep_in_memory=True,
         )
         # Drop rather than truncate: a clipped answer with no <|im_end|> would
         # teach the model to run on past the query.
         before = len(ds)
-        ds = ds.filter(lambda x: x["length"] <= max_seq_len)
+        ds = ds.filter(lambda x: x["length"] <= max_seq_len, keep_in_memory=True)
         if is_main and len(ds) < before:
             print(f"  {desc}: dropped {before - len(ds)} of {before} over {max_seq_len} tokens")
         return ds.remove_columns(["length"])

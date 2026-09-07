@@ -57,7 +57,15 @@ echo "Installing pinned stack (this takes several minutes -- ~3GB of wheels)..."
 # your home checkout. Keep the shared copy in sync with the repo.
 echo ""
 echo "Syncing scripts to $DEMO_DIR/scripts ..."
-cp "$REPO_DIR"/scripts/* "$DEMO_DIR/scripts/"
+# rsync, not `cp scripts/*`, for two reasons that both bit in practice:
+#   * cp without -r exits 1 on any subdirectory, and `set -e` then aborts this
+#     script before the activate.sh and GPU-verification steps below. A
+#     __pycache__ appears the moment anyone imports sft_common from the repo,
+#     so this is a normal state, not an exotic one.
+#   * cp never removes anything, so a renamed or deleted script lingers in
+#     $DEMO_DIR forever and the Slurm jobs keep executing the stale copy.
+rsync -a --delete --exclude='__pycache__' \
+    "$REPO_DIR/scripts/" "$DEMO_DIR/scripts/"
 
 # --- Step 4: activation helper ---------------------------------------------
 cat > "$DEMO_DIR/activate.sh" << ACTIVATE

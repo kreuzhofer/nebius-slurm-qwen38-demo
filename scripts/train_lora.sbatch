@@ -50,6 +50,18 @@ export LORA_DROPOUT=0.05
 export NCCL_DEBUG=WARN               # INFO if you need to debug IB reachability
 export NCCL_IB_DISABLE=0             # InfiniBand between nodes
 export NCCL_NET_GDR_LEVEL=5          # GPUDirect RDMA
+# Loading the 52GB base checkpoint across 16 ranks is hundreds of broadcasts,
+# and the 1800s default is not generous over shared NFS. Pairs with
+# ddp_timeout=7200 in train_lora.py. Unlike train_full.sbatch we leave the NCCL
+# watchdog enabled: this path has no long state-dict gather to trip it, and the
+# monitoring is worth keeping.
+export NCCL_TIMEOUT=7200
+
+# Triton compiles kernels per rank; point its cache at node-local scratch so 16
+# ranks are not writing into the same directory on shared NFS. serve.sbatch
+# already does this.
+export TRITON_CACHE_DIR="${TMPDIR:-/tmp}/triton-$SLURM_JOB_ID"
+mkdir -p "$TRITON_CACHE_DIR"
 
 # Sequence packing is unavailable for this architecture (the Gated DeltaNet
 # recurrent state cannot be reset mid-sequence), so expect lower tokens/s per
@@ -71,7 +83,7 @@ echo "=========================================="
 
 srun torchrun \
     --nnodes="$SLURM_NNODES" \
-    --nproc_per_node=8 \
+    --nproc_per_node="$SLURM_GPUS_ON_NODE" \
     --rdzv_id="$SLURM_JOB_ID" \
     --rdzv_backend=c10d \
     --rdzv_endpoint="$MASTER_ADDR:$MASTER_PORT" \

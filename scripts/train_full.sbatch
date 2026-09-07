@@ -68,6 +68,13 @@ export NCCL_NET_GDR_LEVEL=5          # GPUDirect RDMA
 export NCCL_TIMEOUT=7200
 export TORCH_NCCL_ENABLE_MONITORING=0
 
+# Triton compiles kernels per rank; point its cache at node-local scratch so 16
+# ranks are not writing into the same directory on shared NFS. serve.sbatch
+# already does this.
+export TRITON_CACHE_DIR="${TMPDIR:-/tmp}/triton-$SLURM_JOB_ID"
+mkdir -p "$TRITON_CACHE_DIR"
+
+
 # Sequence packing is unavailable for this architecture (the Gated DeltaNet
 # recurrent state cannot be reset mid-sequence), so expect lower tokens/s per
 # GPU than an equivalent dense Qwen3 run.
@@ -89,7 +96,7 @@ echo "=========================================="
 
 srun torchrun \
     --nnodes="$SLURM_NNODES" \
-    --nproc_per_node=8 \
+    --nproc_per_node="$SLURM_GPUS_ON_NODE" \
     --rdzv_id="$SLURM_JOB_ID" \
     --rdzv_backend=c10d \
     --rdzv_endpoint="$MASTER_ADDR:$MASTER_PORT" \

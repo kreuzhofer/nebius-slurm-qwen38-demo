@@ -91,6 +91,12 @@ def main():
         lr_scheduler_type="cosine",
         max_grad_norm=1.0,
         bf16=True,
+        # Loading the 52GB base checkpoint fans out into hundreds of broadcasts
+        # across 16 ranks, and the default 1800s process-group timeout is not
+        # generous over shared NFS. The full-parameter path already raises this
+        # for its state-dict gather; the LoRA path needs it for the *load*, even
+        # though its own saves are small.
+        ddp_timeout=7200,
         fsdp=True,
         # Only the adapter is trainable, so the state-dict gather is small and
         # a full checkpoint every save_steps is cheap -- unlike train_full.py.
@@ -136,7 +142,13 @@ def main():
         # Fallback if a future transformers/peft combination writes nothing
         # useful here: recover from the last step checkpoint.
         if not os.path.exists(os.path.join(output_dir, "adapter_model.safetensors")):
-            ckpts = sorted(glob.glob(os.path.join(output_dir, "checkpoint-*")))
+            # Sort by step number, not lexicographically: sorted() puts
+            # "checkpoint-1000" before "checkpoint-500", so [-1] would restore
+            # the *oldest* checkpoint and look like it had worked.
+            ckpts = sorted(
+                glob.glob(os.path.join(output_dir, "checkpoint-*")),
+                key=lambda p: int(p.rsplit("-", 1)[1]),
+            )
             if ckpts:
                 print(f"adapter_model.safetensors missing; copying from {ckpts[-1]}")
                 for fname in os.listdir(ckpts[-1]):
