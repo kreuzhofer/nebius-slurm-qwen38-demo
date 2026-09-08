@@ -4,6 +4,22 @@ Fine-tunes [`Qwen/Qwen3.8-27B`](https://huggingface.co/Qwen/Qwen3.8-27B) for
 natural-language-to-SQL across 2 nodes × 8 NVIDIA B300, then evaluates it
 against the base model and serves it with vLLM.
 
+📊 **[Full results and methodology → `docs/RESULTS.md`](docs/RESULTS.md)** —
+every measurement behind this README, the charts, all 500 predictions, the eight
+defects that running it exposed, and what was *not* measured.
+
+**Measured on 500 held-out examples** (one epoch each, greedy decoding):
+
+| Model | Accuracy | vs base | Usable as-is |
+|---|---|---|---|
+| Qwen3.8-27B base | 55.4% | — | 1.6% |
+| **LoRA (1 epoch)** | **87.4%** | **+32.0pp** | 86.8% |
+| Full fine-tune (1 epoch) | 86.6% | +31.2pp | 86.0% |
+
+Full fine-tuning is **statistically indistinguishable** from LoRA here
+(exact McNemar p = 0.42 over the same 500 examples), so a **4.3 GB adapter
+matched a 51 GB checkpoint**.
+
 Two training paths, same data and same effective batch size so the results are
 directly comparable:
 
