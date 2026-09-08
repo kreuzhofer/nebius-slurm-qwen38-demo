@@ -22,7 +22,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 echo "=== Qwen3.8-27B demo setup ==="
 echo "DEMO_DIR: $DEMO_DIR"
 
-mkdir -p "$DEMO_DIR"/{models,datasets,output,results,logs,scripts}
+mkdir -p "$DEMO_DIR"/{models,datasets,output,results,logs,repo}
 
 # --- Sanity-check the hardware we are pinning wheels for -------------------
 # B300 is sm_103. If you are on a different GPU, the cu130 pin in
@@ -57,7 +57,7 @@ echo "Installing pinned stack (this takes several minutes -- ~8GB installed)..."
 # Slurm jobs run on the workers, which can read $DEMO_DIR but not necessarily
 # your home checkout. Keep the shared copy in sync with the repo.
 echo ""
-echo "Syncing scripts to $DEMO_DIR/scripts ..."
+echo "Syncing repo to $DEMO_DIR/repo ..."
 # rsync, not `cp scripts/*`, for two reasons that both bit in practice:
 #   * cp without -r exits 1 on any subdirectory, and `set -e` then aborts this
 #     script before the activate.sh and GPU-verification steps below. A
@@ -65,8 +65,15 @@ echo "Syncing scripts to $DEMO_DIR/scripts ..."
 #     so this is a normal state, not an exotic one.
 #   * cp never removes anything, so a renamed or deleted script lingers in
 #     $DEMO_DIR forever and the Slurm jobs keep executing the stale copy.
-rsync -a --delete --exclude='__pycache__' \
-    "$REPO_DIR/scripts/" "$DEMO_DIR/scripts/"
+# Sync into $DEMO_DIR/repo, NOT $DEMO_DIR directly: the weights live in
+# $DEMO_DIR/models/Qwen3.8-27B and the code in models/qwen3.8-27b/, which differ
+# only by case. Keeping the repo under its own prefix keeps code and data apart
+# and makes "what do the Slurm jobs actually execute" answerable with one path.
+mkdir -p "$DEMO_DIR/repo"
+for d in common models scripts; do
+    rsync -a --delete --exclude='__pycache__' \
+        "$REPO_DIR/$d/" "$DEMO_DIR/repo/$d/"
+done
 
 # --- Step 4: activation helper ---------------------------------------------
 cat > "$DEMO_DIR/activate.sh" << ACTIVATE
@@ -110,4 +117,4 @@ print('peft           :', peft.__version__)
 echo ""
 echo "=== Setup complete ==="
 echo "Next:  source $DEMO_DIR/activate.sh"
-echo "       bash $DEMO_DIR/scripts/download.sh"
+echo "       bash $DEMO_DIR/repo/models/qwen3.8-27b/download.sh"

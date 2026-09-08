@@ -1,5 +1,14 @@
 """
-sft_common.py -- shared pieces for train_lora.py and train_full.py.
+dataset.py -- the TASK definition, shared by every model in this repo.
+
+The prompt construction, the label masking and the 95/5 split live here once.
+They must be identical for every model and for evaluation, because they are what
+make two models' numbers comparable. A model-specific copy of any of this is a
+drift waiting to happen -- see docs/RESULTS.md, where exactly that kind of drift
+made two runs of the same task look irreconcilable.
+
+Anything architecture-shaped (how to load the weights, how FSDP wraps them)
+belongs in models/<model>/model.py instead.
 
 The prompt construction and label masking below are the subtle part of this
 demo, and they must be identical for both training modes and for evaluate.py --
@@ -183,85 +192,3 @@ def load_tokenizer(model_path):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     return tokenizer
-
-
-def load_model(model_path):
-    """Load the text-only stack, dropping the vision tower and MTP head."""
-    import torch
-    from transformers import AutoModelForCausalLM
-
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        dtype=torch.bfloat16,        # `torch_dtype` is deprecated in transformers v5
-        attn_implementation="sdpa",  # only affects the 16 full-attention layers
-        use_kernels=True,            # fused Gated DeltaNet kernels from the Hub;
-                                     # without this, 48/64 layers run the slow
-                                     # pure-PyTorch fallback
-    )
-    # Avoids allocating the ~152MB/sequence GDN recurrent state every step.
-    model.config.use_cache = False
-    return model
-
-
-def fsdp_config(state_dict_type="FULL_STATE_DICT"):
-    """
-    FSDP2 settings.
-
-    transformers v5 defaults fsdp_config["version"] to 2, and the FSDP1-only
-    knobs from the Qwen3-era scripts (backward_prefetch, forward_prefetch,
-    use_orig_params) are silently ignored under it -- so they are gone here
-    rather than carried over as dead config.
-    """
-    return {
-        "version": 2,
-        "auto_wrap_policy": "TRANSFORMER_BASED_WRAP",
-        # Set explicitly. Auto-detection reads _no_split_modules off the model
-        # class, which still lists Qwen3_5VisionBlock even though a text-only
-        # instantiation has no such module.
-        "transformer_layer_cls_to_wrap": ["Qwen3_5DecoderLayer"],
-        "reshard_after_forward": True,   # equivalent to full_shard
-        # Prefer this over TrainingArguments(gradient_checkpointing=True): the
-        # latter adds a redundant AllGather in the backward pass under FSDP
-        # (transformers#30404).
-        "activation_checkpointing": True,
-        "cpu_ram_efficient_loading": True,
-        "state_dict_type": state_dict_type,
-    }
-
-
-def env_config():
-    """Read the knobs the .sbatch files set, with defaults."""
-    demo_dir = os.environ.get("DEMO_DIR", "/mnt/data/qwen38-demo")
-    rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")))
-    return {
-        "demo_dir": demo_dir,
-        "model_path": os.environ.get("MODEL_PATH", f"{demo_dir}/models/Qwen3.8-27B"),
-        "dataset_path": os.environ.get(
-            "DATASET_PATH", f"{demo_dir}/datasets/sql-create-context"
-        ),
-        "per_device_bs": int(os.environ.get("PER_DEVICE_BATCH_SIZE", "8")),
-        "grad_accum": int(os.environ.get("GRADIENT_ACCUMULATION_STEPS", "1")),
-        "num_epochs": int(os.environ.get("NUM_EPOCHS", "1")),
-        "max_seq_len": int(os.environ.get("MAX_SEQ_LEN", "1024")),
-        # Short-run knobs. MAX_STEPS=-1 means "run NUM_EPOCHS epochs", which is
-        # how transformers itself spells "no step cap" -- so the default here is
-        # exactly the previous behaviour: one full epoch, 584 optimizer steps at
-        # effective batch 128 over the 74,648-example train split.
-        #
-        # A real smoke run is MAX_STEPS=25 SAVE_STEPS=10, which exercises the
-        # checkpoint-save path twice in a couple of minutes instead of once at
-        # the very end of a full run.
-        "max_steps": int(os.environ.get("MAX_STEPS", "-1")),
-        "save_steps": int(os.environ.get("SAVE_STEPS", "500")),
-        # Defaults to SAVE_STEPS so a short run evaluates as often as it saves;
-        # override independently when that is too expensive.
-        "eval_steps": int(
-            os.environ.get("EVAL_STEPS", os.environ.get("SAVE_STEPS", "500"))
-        ),
-        # -1 = the whole 3,929-example eval split. A 25-step smoke run that
-        # evaluates over all of it spends far longer evaluating than training,
-        # so cap it there.
-        "max_eval_examples": int(os.environ.get("MAX_EVAL_EXAMPLES", "-1")),
-        "rank": rank,
-        "is_main": rank == 0,
-    }

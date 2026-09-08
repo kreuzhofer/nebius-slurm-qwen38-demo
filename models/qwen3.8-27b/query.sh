@@ -3,9 +3,9 @@
 # query.sh -- send a SQL generation request to the running vLLM server.
 #
 # Usage:
-#   bash scripts/query.sh
-#   bash scripts/query.sh "<schema>" "<question>"
-#   bash scripts/query.sh "<schema>" "<question>" <host> <port> <served-model-name>
+#   bash models/qwen3.8-27b/query.sh
+#   bash models/qwen3.8-27b/query.sh "<schema>" "<question>"
+#   bash models/qwen3.8-27b/query.sh "<schema>" "<question>" <host> <port> <served-model-name>
 #
 # All five arguments are optional and positional. The 5th matters when you are
 # not serving the default merged checkpoint: serve.sbatch derives
@@ -27,7 +27,7 @@ MODEL=${5:-"qwen3.8-27b-sql"}   # = basename of serve.sbatch's MODEL_PATH
 
 if [ -z "$HOST" ]; then
     echo "No qwen38-serve job found. Start one with:" >&2
-    echo "  sbatch $DEMO_DIR/scripts/serve.sbatch" >&2
+    echo "  sbatch $DEMO_DIR/repo/models/qwen3.8-27b/serve.sbatch" >&2
     exit 1
 fi
 

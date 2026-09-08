@@ -87,21 +87,21 @@ Check yours with `sinfo -o "%P %N %G"` before trusting the pins in
 
 ```bash
 # 0. one-time environment setup on the login node (~8GB installed)
-git clone https://github.com/kreuzhofer/nebius-slurm-qwen38-lora-demo.git
-cd nebius-slurm-qwen38-lora-demo
+git clone https://github.com/kreuzhofer/nebius-slurm-qwen38-demo.git
+cd nebius-slurm-qwen38-demo
 bash scripts/setup.sh                 # ends with a GPU smoke test on a worker
 source /mnt/data/qwen38-demo/activate.sh
 
 # 1. fetch model (52GB, 18 shards) + dataset (17MB on disk)
-bash /mnt/data/qwen38-demo/scripts/download.sh
+bash /mnt/data/qwen38-demo/repo/models/qwen3.8-27b/download.sh
 
 # 2. smoke-test the whole path first: 25 steps, ~6 min, saves twice
 MAX_STEPS=25 SAVE_STEPS=10 MAX_EVAL_EXAMPLES=200 \
-    sbatch --export=ALL /mnt/data/qwen38-demo/scripts/train_lora.sbatch
+    sbatch --export=ALL /mnt/data/qwen38-demo/repo/models/qwen3.8-27b/train_lora.sbatch
 
 # 3. train for real on 16 GPUs -- pick one. One epoch = 584 steps, ~15-20 min.
-sbatch /mnt/data/qwen38-demo/scripts/train_lora.sbatch    # LoRA adapter
-sbatch /mnt/data/qwen38-demo/scripts/train_full.sbatch    # all 26.9B params
+sbatch /mnt/data/qwen38-demo/repo/models/qwen3.8-27b/train_lora.sbatch    # LoRA adapter
+sbatch /mnt/data/qwen38-demo/repo/models/qwen3.8-27b/train_full.sbatch    # all 26.9B params
 squeue --me
 tail -f /mnt/data/qwen38-demo/logs/train_lora_<JOBID>.out
 
@@ -112,7 +112,7 @@ tail -f /mnt/data/qwen38-demo/logs/train_lora_<JOBID>.out
 #    /usr/bin/python, which has no torch and no peft.
 srun --partition=main --nodes=1 --gpus-per-node=1 --time=01:00:00 \
     /mnt/data/qwen38-demo/venv/bin/python \
-    /mnt/data/qwen38-demo/scripts/merge_lora.py \
+    /mnt/data/qwen38-demo/repo/models/qwen3.8-27b/merge_lora.py \
     /mnt/data/qwen38-demo/output/qwen3.8-27b-sql-lora \
     /mnt/data/qwen38-demo/models/Qwen3.8-27B \
     /mnt/data/qwen38-demo/output/qwen3.8-27b-sql
@@ -120,8 +120,8 @@ srun --partition=main --nodes=1 --gpus-per-node=1 --time=01:00:00 \
 # 5. score base vs fine-tuned. Every argument is passed through to
 #    evaluate.py, so pass --tuned-model once per model you want in one chart;
 #    the base model's predictions are generated only once.
-sbatch /mnt/data/qwen38-demo/scripts/evaluate.sbatch          # base vs merged LoRA, N=500
-sbatch /mnt/data/qwen38-demo/scripts/evaluate.sbatch \
+sbatch /mnt/data/qwen38-demo/repo/models/qwen3.8-27b/evaluate.sbatch          # base vs merged LoRA, N=500
+sbatch /mnt/data/qwen38-demo/repo/models/qwen3.8-27b/evaluate.sbatch \
     --tuned-model /mnt/data/qwen38-demo/output/qwen3.8-27b-sql \
     --tuned-model /mnt/data/qwen38-demo/output/qwen3.8-27b-sql-full
 #    Output filenames derive from the tuned model names, so separate
@@ -131,15 +131,19 @@ sbatch /mnt/data/qwen38-demo/scripts/evaluate.sbatch \
 # 6. serve and query. vLLM takes several minutes to load 51GB, and query.sh
 #    reads the hostname from squeue -- which is empty while the job is still
 #    PENDING -- so wait for the server to answer before querying.
-sbatch /mnt/data/qwen38-demo/scripts/serve.sbatch
+sbatch /mnt/data/qwen38-demo/repo/models/qwen3.8-27b/serve.sbatch
 HOST=$(squeue --noheader -n qwen38-serve -o "%N" | head -1)
 until curl -sf -m 3 "http://$HOST:8000/v1/models" >/dev/null; do sleep 10; done
-bash scripts/query.sh
+bash models/qwen3.8-27b/query.sh
 ```
 
-Re-run `bash scripts/setup.sh` after editing anything in `scripts/` — it
-re-syncs the shared copy under `/mnt/data/qwen38-demo/scripts/` that the Slurm
-jobs actually execute. The sync is `rsync -a --delete`, so renamed and deleted
+Re-run `bash scripts/setup.sh` after editing anything in the repo — it re-syncs
+`common/`, `models/` and `scripts/` to `/mnt/data/qwen38-demo/repo/`, which is
+what the Slurm jobs actually execute. The sync is `rsync -a --delete`, so
+renamed and deleted files are pruned rather than left behind as stale copies.
+It syncs under `repo/` rather than into `$DEMO_DIR` directly because the model
+*weights* live at `$DEMO_DIR/models/Qwen3.8-27B` and the model *code* at
+`models/qwen3.8-27b/` — names that differ only by case. The sync is `rsync -a --delete`, so renamed and deleted
 scripts are pruned rather than left behind as stale copies.
 
 Downloads run unauthenticated unless you export `HF_TOKEN`, which the Hub warns
@@ -150,21 +154,28 @@ is optional.
 ## Layout
 
 ```
-requirements.txt          pinned stack; torch must come from the cu130 index first
-scripts/
-  setup.sh                venv on shared NFS + install + GPU smoke test
-  download.sh             model + dataset to shared storage
-  sft_common.py           prompt building, label masking, FSDP2 config, loading
-  train_lora.py           LoRA SFT: hybrid-attention target modules
-  train_lora.sbatch       2 nodes x 8 GPUs via srun + torchrun
-  train_full.py           full-parameter SFT: fused AdamW, one-shot save
-  train_full.sbatch       same topology, longer collective timeouts
-  merge_lora.py           adapter -> standalone checkpoint (LoRA path only)
-  evaluate.py             base vs fine-tuned exact-match + chart + JSON
-  evaluate.sbatch         1 GPU
-  serve.sbatch            vLLM OpenAI server
-  query.sh                one-shot SQL request
+requirements.txt              pinned stack; torch must come from the cu130 index
+scripts/setup.sh              venv on shared NFS + install + GPU smoke test
+
+common/                       THE TASK -- shared by every model, must not diverge
+  dataset.py                  95/5 seed-42 split, prompt building, label masking
+  metric.py                   normalize_sql -- this defines the published number
+  evaluate.py                 N-way base-vs-tuned comparison, chart + JSON + MD
+
+models/qwen3.8-27b/           THE ARCHITECTURE -- one folder per model
+  model.py                    load_model, FSDP2 wrap class, env knobs
+  download.sh                 this model's weights + the shared dataset
+  train_lora.py  train_lora.sbatch    LoRA SFT, 2 nodes x 8 GPUs
+  train_full.py  train_full.sbatch    full-parameter SFT
+  merge_lora.py                       adapter -> standalone checkpoint
+  evaluate.sbatch  serve.sbatch  query.sh
 ```
+
+The split is deliberate. `common/` holds what defines *what is being measured* —
+change it and every model's numbers move together, which is what keeps them
+comparable. `models/<name>/` holds what is *architecture-shaped*: how the model
+loads, how FSDP wraps it, which modules LoRA targets. A second model gets its
+own folder rather than a branch inside these files.
 
 `sft_common.py` holds the prompt construction and label masking. Both training
 scripts and `evaluate.py` import it, so training and scoring cannot drift apart

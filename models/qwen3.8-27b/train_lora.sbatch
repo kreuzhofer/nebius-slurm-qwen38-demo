@@ -3,7 +3,7 @@
 # train_lora.sbatch -- LoRA fine-tune Qwen3.8-27B across 2 nodes x 8 B300.
 #
 # HOW TO USE:
-#   sbatch /mnt/data/qwen38-demo/scripts/train_lora.sbatch
+#   sbatch /mnt/data/qwen38-demo/repo/models/qwen3.8-27b/train_lora.sbatch
 #
 # MONITORING:
 #   squeue --me
@@ -60,7 +60,7 @@ export EVAL_STEPS="${EVAL_STEPS:-$SAVE_STEPS}"
 export MAX_EVAL_EXAMPLES="${MAX_EVAL_EXAMPLES:--1}"   # -1 = all 3,929
 
 # Every rank imports sft_common from shared NFS, so without this all 16 race to
-# write .pyc files into $DEMO_DIR/scripts/__pycache__. Same class of problem as
+# write .pyc files into $DEMO_DIR/**/__pycache__. Same class of problem as
 # TRITON_CACHE_DIR above and disable_caching() in prepare_datasets.
 export PYTHONDONTWRITEBYTECODE=1
 
@@ -109,4 +109,4 @@ srun torchrun \
     --rdzv_id="$SLURM_JOB_ID" \
     --rdzv_backend=c10d \
     --rdzv_endpoint="$MASTER_ADDR:$MASTER_PORT" \
-    "$DEMO_DIR/scripts/train_lora.py"
+    "$DEMO_DIR/repo/models/qwen3.8-27b/train_lora.py"

@@ -4,10 +4,10 @@
 #
 # HOW TO USE:
 #   # serve the merged fine-tuned model (1 GPU, port 8000):
-#   sbatch /mnt/data/qwen38-demo/scripts/serve.sbatch
+#   sbatch /mnt/data/qwen38-demo/repo/models/qwen3.8-27b/serve.sbatch
 #
 #   # serve the base model alongside it for A/B comparison:
-#   sbatch /mnt/data/qwen38-demo/scripts/serve.sbatch \
+#   sbatch /mnt/data/qwen38-demo/repo/models/qwen3.8-27b/serve.sbatch \
 #       /mnt/data/qwen38-demo/models/Qwen3.8-27B 8001
 #
 # TP=1 is the default and is sufficient: ~50GB of bf16 weights on a 268.6 GiB B300.
@@ -30,7 +30,7 @@
 #
 # QUERYING:
 #   squeue --me                # NODELIST tells you which worker it landed on
-#   bash scripts/query.sh
+#   bash models/qwen3.8-27b/query.sh
 # =============================================================================
 
 #SBATCH --job-name=qwen38-serve

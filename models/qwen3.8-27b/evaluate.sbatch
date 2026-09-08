@@ -14,16 +14,16 @@
 #
 # HOW TO USE:
 #   # base vs merged LoRA, 500 examples (the default):
-#   sbatch /mnt/data/qwen38-demo/scripts/evaluate.sbatch
+#   sbatch /mnt/data/qwen38-demo/repo/models/qwen3.8-27b/evaluate.sbatch
 #
 #   # three-way: base vs merged LoRA vs full fine-tune, one chart, base
 #   # generated once:
-#   sbatch /mnt/data/qwen38-demo/scripts/evaluate.sbatch \
+#   sbatch /mnt/data/qwen38-demo/repo/models/qwen3.8-27b/evaluate.sbatch \
 #       --tuned-model /mnt/data/qwen38-demo/output/qwen3.8-27b-sql \
 #       --tuned-model /mnt/data/qwen38-demo/output/qwen3.8-27b-sql-full
 #
 #   # cheap smoke:
-#   sbatch /mnt/data/qwen38-demo/scripts/evaluate.sbatch --num-examples 100
+#   sbatch /mnt/data/qwen38-demo/repo/models/qwen3.8-27b/evaluate.sbatch --num-examples 100
 #
 # Results land in /mnt/data/qwen38-demo/results/, under a filename prefix
 # derived from the tuned model names unless --prefix says otherwise.
@@ -53,4 +53,4 @@ echo "=========================================="
 echo "evaluate.py $*"
 echo "=========================================="
 
-python "$DEMO_DIR/scripts/evaluate.py" "$@"
+python "$DEMO_DIR/repo/common/evaluate.py" "$@"

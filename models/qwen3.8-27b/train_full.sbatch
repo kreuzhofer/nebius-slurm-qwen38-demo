@@ -8,11 +8,11 @@
 # weights, gradients and optimizer state).
 #
 # HOW TO USE:
-#   sbatch /mnt/data/qwen38-demo/scripts/train_full.sbatch
+#   sbatch /mnt/data/qwen38-demo/repo/models/qwen3.8-27b/train_full.sbatch
 #
 #   # with mid-run checkpoints (costs a ~54GB gather+write each time):
 #   SAVE_STRATEGY=steps SAVE_STEPS=200 sbatch --export=ALL \
-#       /mnt/data/qwen38-demo/scripts/train_full.sbatch
+#       /mnt/data/qwen38-demo/repo/models/qwen3.8-27b/train_full.sbatch
 #
 # MONITORING:
 #   squeue --me
@@ -20,8 +20,8 @@
 #   sacct -j <JOBID> --format=JobID,JobName,State,Elapsed,ExitCode
 #
 # The output checkpoint is directly usable -- no LoRA merge step:
-#   sbatch scripts/evaluate.sbatch <base> <output>
-#   sbatch scripts/serve.sbatch <output>
+#   sbatch models/qwen3.8-27b/evaluate.sbatch <base> <output>
+#   sbatch models/qwen3.8-27b/serve.sbatch <output>
 # =============================================================================
 
 #SBATCH --job-name=qwen38-full
@@ -67,7 +67,7 @@ export EVAL_STEPS="${EVAL_STEPS:-$SAVE_STEPS}"
 export MAX_EVAL_EXAMPLES="${MAX_EVAL_EXAMPLES:--1}"   # -1 = all 3,929
 
 # Every rank imports sft_common from shared NFS, so without this all 16 race to
-# write .pyc files into $DEMO_DIR/scripts/__pycache__. Same class of problem as
+# write .pyc files into $DEMO_DIR/**/__pycache__. Same class of problem as
 # TRITON_CACHE_DIR above and disable_caching() in prepare_datasets.
 export PYTHONDONTWRITEBYTECODE=1
 
@@ -117,4 +117,4 @@ srun torchrun \
     --rdzv_id="$SLURM_JOB_ID" \
     --rdzv_backend=c10d \
     --rdzv_endpoint="$MASTER_ADDR:$MASTER_PORT" \
-    "$DEMO_DIR/scripts/train_full.py"
+    "$DEMO_DIR/repo/models/qwen3.8-27b/train_full.py"

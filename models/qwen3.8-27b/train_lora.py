@@ -11,20 +11,23 @@ hybrid, so the Qwen3-era target list covers only a quarter of the token-mixing
 blocks. See LORA_TARGET_MODULES.
 """
 
-import glob
 import os
+import sys
+
+# Make the repo root importable (it is DEMO_DIR on the cluster) so `common`
+# resolves however this script is invoked.
+sys.path.insert(
+    0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
+
+import glob
 import shutil
 
 from peft import LoraConfig, TaskType, get_peft_model
 from transformers import DataCollatorForSeq2Seq, Trainer, TrainingArguments
 
-from sft_common import (
-    env_config,
-    fsdp_config,
-    load_model,
-    load_tokenizer,
-    prepare_datasets,
-)
+from common.dataset import load_tokenizer, prepare_datasets
+from model import env_config, fsdp_config, load_model
 
 # Attention projections for the 16 full-attention layers, the Gated DeltaNet
 # projections for the other 48, and the MLP for all 64.

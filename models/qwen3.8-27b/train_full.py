@@ -24,16 +24,18 @@ CHECKPOINTING IS THE INTERESTING PART -- see the comment on SAVE_STRATEGY below.
 """
 
 import os
+import sys
+
+# Make the repo root importable (it is DEMO_DIR on the cluster) so `common`
+# resolves however this script is invoked.
+sys.path.insert(
+    0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
 
 from transformers import DataCollatorForSeq2Seq, Trainer, TrainingArguments
 
-from sft_common import (
-    env_config,
-    fsdp_config,
-    load_model,
-    load_tokenizer,
-    prepare_datasets,
-)
+from common.dataset import load_tokenizer, prepare_datasets
+from model import env_config, fsdp_config, load_model
 
 
 def main():
@@ -150,8 +152,8 @@ def main():
         tokenizer.save_pretrained(output_dir)
         print(f"\nFull fine-tune complete. Model saved to {output_dir}")
         print("This checkpoint is directly usable -- no LoRA merge step needed:")
-        print(f"  sbatch scripts/evaluate.sbatch <base> {output_dir}")
-        print(f"  sbatch scripts/serve.sbatch {output_dir}")
+        print(f"  sbatch models/qwen3.8-27b/evaluate.sbatch <base> {output_dir}")
+        print(f"  sbatch models/qwen3.8-27b/serve.sbatch {output_dir}")
 
     # Hold every rank here until rank 0 has finished writing.
     #

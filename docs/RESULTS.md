@@ -299,14 +299,14 @@ three were conservative, so nothing broke — but the pattern is the lesson.
 ```bash
 bash scripts/setup.sh                          # venv on shared NFS + GPU smoke test
 source /mnt/data/qwen38-demo/activate.sh
-bash /mnt/data/qwen38-demo/scripts/download.sh # 52 GB model + dataset
+bash /mnt/data/qwen38-demo/repo/models/qwen3.8-27b/download.sh # 52 GB model + dataset
 
 # smoke first: 25 steps, ~6 min, saves twice
 MAX_STEPS=25 SAVE_STEPS=10 MAX_EVAL_EXAMPLES=200 \
-    sbatch --export=ALL scripts/train_lora.sbatch
+    sbatch --export=ALL models/qwen3.8-27b/train_lora.sbatch
 
-sbatch scripts/train_lora.sbatch                # 1 epoch, 584 steps, ~15 min
-sbatch scripts/train_full.sbatch                # 1 epoch, ~12 min
+sbatch models/qwen3.8-27b/train_lora.sbatch                # 1 epoch, 584 steps, ~15 min
+sbatch models/qwen3.8-27b/train_full.sbatch                # 1 epoch, ~12 min
 
 srun --partition=main --nodes=1 --gpus-per-node=1 --time=01:00:00 \
     /mnt/data/qwen38-demo/venv/bin/python scripts/merge_lora.py \

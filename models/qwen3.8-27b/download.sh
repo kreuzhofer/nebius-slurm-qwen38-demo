@@ -10,7 +10,7 @@
 #
 # Usage:
 #   source /mnt/data/qwen38-demo/activate.sh
-#   bash /mnt/data/qwen38-demo/scripts/download.sh
+#   bash /mnt/data/qwen38-demo/repo/models/qwen3.8-27b/download.sh
 # =============================================================================
 set -euo pipefail
 
@@ -62,4 +62,4 @@ fi
 
 echo ""
 echo "=== Done ==="
-echo "Next:  sbatch $DEMO_DIR/scripts/train_lora.sbatch"
+echo "Next:  sbatch $DEMO_DIR/repo/models/qwen3.8-27b/train_lora.sbatch"
