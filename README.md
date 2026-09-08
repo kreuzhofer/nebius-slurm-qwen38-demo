@@ -9,7 +9,7 @@ directly comparable:
 
 | | script | trainable params | LR | output |
 |---|---|---|---|---|
-| **LoRA** | `train_lora.sbatch` | 0.80% (adapter) | 2e-4 | adapter, needs a merge step |
+| **LoRA** | `train_lora.sbatch` | 0.59% (adapter) | 2e-4 | adapter, needs a merge step |
 | **Full** | `train_full.sbatch` | all ~26.9B | 1e-5 | standalone checkpoint |
 
 Task: [`b-mc2/sql-create-context`](https://huggingface.co/datasets/b-mc2/sql-create-context).
@@ -166,13 +166,35 @@ to `Qwen3_5ForCausalLM`, whose
 `_keys_to_ignore_on_load_unexpected = [r"^mtp.*", r"^model.visual.*"]` drops
 both cleanly and leaves the ~26.9B-parameter text stack.
 
-**Attention is hybrid, and this changes the LoRA config.** Of 64 layers only
-**16** use classic attention (`self_attn`, `full_attention_interval: 4`); the
-other **48** are Gated DeltaNet linear attention with projections named
-`linear_attn.in_proj_{qkv,z,a,b}` and `linear_attn.out_proj`. A Qwen3-era
-target list of `q/k/v/o_proj` + MLP silently adapts only a quarter of the
-token-mixing blocks. `train_lora.py` targets both kinds, and skips
-`in_proj_a`/`in_proj_b` (both `[48, 5120]`, where rank > 48 is degenerate).
+**Attention is hybrid — and, measured, this does *not* change the LoRA config.**
+Of 64 layers only **16** use classic attention (`self_attn`,
+`full_attention_interval: 4`); the other **48** are Gated DeltaNet linear
+attention with projections named `linear_attn.in_proj_{qkv,z,a,b}` and
+`linear_attn.out_proj`. The obvious inference — that a Qwen3-era target list of
+`q/k/v/o_proj` + MLP adapts only a quarter of the token-mixing blocks and must
+therefore be leaving capability on the table — is wrong, and this repo shipped
+it as fact until it was tested.
+
+Both configurations were trained identically and scored on the same 100
+held-out examples:
+
+| steps | attn + **GDN** + MLP | attn + MLP | won only by A | won only by B |
+|---|---|---|---|---|
+| 25 | 74% | 75% | **0** | 1 |
+| 500 | 88% | **89%** | **0** | 1 |
+
+`eval_loss` at 500 steps: 0.01749 vs 0.01754. Across two runs at two scales
+there is not **one** held-out example the GDN adapters get right that the
+narrow list misses, while the broad list costs 58.2M extra trainable
+parameters (0.80% vs 0.59%) and about **15% throughput per step**.
+
+So the default targets attention + MLP only, and skips the GDN projections.
+`LORA_TARGET_GDN=1` puts them back if you want to re-test at another rank or
+on another task — the arms here are not capacity-matched, so this measures
+"which shipped config is better", not "does GDN placement matter in principle".
+
+`in_proj_a`/`in_proj_b` are excluded regardless: both are `[48, 5120]`, so any
+rank above 48 is degenerate there.
 
 **Thinking is on by default** at `reasoning_effort='xhigh'`. `enable_thinking=False`
 does two distinct jobs: it keeps an injected "Reasoning effort is set to

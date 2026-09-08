@@ -27,7 +27,13 @@ source "$DEMO_DIR/venv/bin/activate"
 
 # --- What to train -----------------------------------------------------------
 export MODEL_PATH="$DEMO_DIR/models/Qwen3.8-27B"
-export OUTPUT_DIR="$DEMO_DIR/output/qwen3.8-27b-sql-lora"
+# Overridable so A/B arms can write to separate directories without editing
+# this file (see LORA_TARGET_GDN and #12).
+export OUTPUT_DIR="${OUTPUT_DIR:-$DEMO_DIR/output/qwen3.8-27b-sql-lora}"
+# 0 = attention + MLP only. Measured in #12: adding the 48 Gated DeltaNet
+# projections costs 58.2M trainable params and ~15% throughput and changes no
+# predictions (A-only=0 at both 25 and 500 steps). Set to 1 to re-enable.
+export LORA_TARGET_GDN="${LORA_TARGET_GDN:-0}"
 export DATASET_PATH="$DEMO_DIR/datasets/sql-create-context"
 
 # 8 per GPU x 16 GPUs x 1 accum = effective batch 128, matching the Qwen3-era

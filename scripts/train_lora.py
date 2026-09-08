@@ -33,11 +33,52 @@ from sft_common import (
 #   in_proj_a / in_proj_b -- these are [48, 5120]; a LoRA rank above 48 is
 #                            degenerate there for no real capacity gain.
 #   conv1d                -- nn.Conv1d (depthwise), not a linear layer.
-LORA_TARGET_MODULES = [
-    "q_proj", "k_proj", "v_proj", "o_proj",          # 16 full-attention layers
-    "in_proj_qkv", "in_proj_z", "out_proj",          # 48 Gated DeltaNet layers
-    "gate_proj", "up_proj", "down_proj",             # all 64 MLPs
-]
+ATTENTION_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj"]   # 16 full-attn layers
+GDN_TARGETS = ["in_proj_qkv", "in_proj_z", "out_proj"]         # 48 Gated DeltaNet
+MLP_TARGETS = ["gate_proj", "up_proj", "down_proj"]            # all 64 MLPs
+
+
+def lora_target_modules(target_gdn=True):
+    """
+    Which modules LoRA adapts.
+
+    LORA_TARGET_GDN=0 drops the Gated DeltaNet projections, leaving attention +
+    MLP. That is the knob behind the A/B in #12: this repo targets the GDN
+    projections on the reasoning that a Qwen3-era attention-only list adapts
+    only 16 of 64 token-mixing blocks, while every sibling recipe for this
+    architecture targets attention only -- and two of them state outright that
+    LoRA should not be applied to the linear-attention projections. Neither
+    position had ever been measured.
+
+    Module counts, verified against the checkpoint (see #7):
+        with GDN    400 modules, 217.58M trainable at r=32 (0.809% of 26.896B)
+        without GDN 256 modules, 159.38M trainable at r=32 (0.593%)
+
+    Note the arms are NOT capacity-matched at equal rank -- the broad list
+    carries 1.37x the trainable parameters -- so a difference cannot be
+    attributed to placement alone without a rank-matched third arm.
+
+    RESULT (#12), 100 held-out examples, both arms trained identically:
+
+        steps   arm A (with GDN)   arm B (attn+MLP)   A-only   B-only
+           25         74%                75%             0        1
+          500         88%                89%             0        1
+
+    eval_loss at 500 steps: 0.01749 vs 0.01754. Across two runs at two scales
+    there is not ONE example the GDN adapters get right that the narrow list
+    misses, and arm B is ~15% faster per step. So GDN targeting is off by
+    default: it costs 58.2M trainable parameters and 15% throughput to change
+    nothing measurable. Set LORA_TARGET_GDN=1 to put it back.
+
+    This is a measured negative result, not an assumption inherited from the
+    sibling recipes -- which reached the same configuration by reasoning that
+    turned out to be partly wrong (they claimed GDN layers lack MLP
+    projections; all 64 layers have them, see #7).
+    """
+    mods = list(ATTENTION_TARGETS)
+    if target_gdn:
+        mods += GDN_TARGETS
+    return mods + MLP_TARGETS
 
 
 def main():
@@ -51,6 +92,9 @@ def main():
     lora_r = int(os.environ.get("LORA_R", "32"))
     lora_alpha = int(os.environ.get("LORA_ALPHA", "64"))
     lora_dropout = float(os.environ.get("LORA_DROPOUT", "0.05"))
+    # Default 0: MEASURED to make no difference. See lora_target_modules().
+    target_gdn = os.environ.get("LORA_TARGET_GDN", "0") not in ("0", "false", "False")
+    target_modules = lora_target_modules(target_gdn)
 
     if is_main:
         print(f"Model      : {cfg['model_path']}")
@@ -58,6 +102,8 @@ def main():
         print(f"Dataset    : {cfg['dataset_path']}")
         print(f"Batch      : {cfg['per_device_bs']}/GPU x {cfg['grad_accum']} accum")
         print(f"LoRA       : r={lora_r}, alpha={lora_alpha}, dropout={lora_dropout}")
+        print(f"Targets    : {'attn+GDN+MLP' if target_gdn else 'attn+MLP (GDN dropped)'}"
+              f" -> {target_modules}")
         print(f"Max seq len: {cfg['max_seq_len']}")
         if cfg["max_steps"] > 0:
             print(f"Steps      : capped at {cfg['max_steps']} (MAX_STEPS set)")
@@ -77,7 +123,7 @@ def main():
             r=lora_r,
             lora_alpha=lora_alpha,
             lora_dropout=lora_dropout,
-            target_modules=LORA_TARGET_MODULES,
+            target_modules=target_modules,
             bias="none",
         ),
     )
