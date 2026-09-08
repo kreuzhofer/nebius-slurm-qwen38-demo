@@ -242,20 +242,29 @@ roughly 20 GiB per GPU (54 GB bf16 params + 54 GB grads + 216 GB fp32 AdamW
 states, sharded 16 ways), or ~28 GiB with fp32 master weights, against **268.6 GiB**
 of HBM per GPU.
 
-**That arithmetic counts only parameter, gradient and optimizer states — not
-activations — so treat it as a floor.** Measured on the full LoRA epoch (rank 0,
-`torch.cuda.max_memory_allocated`): **29.08 GiB allocated, 63.83 GiB reserved**.
-LoRA holds only ~3.2 GiB of sharded base weights plus a negligible adapter, so
-roughly **25.6 GiB of that is activations and workspace** at
-`PER_DEVICE_BATCH_SIZE=8`, `MAX_SEQ_LEN=1024`, with activation checkpointing on.
-Full fine-tuning pays the same activation cost on top of its states, so expect
-**~46 GiB/GPU allocated**, about **17%** of a card — still enormous headroom,
-but more than double the number the states-only calculation suggests.
+**Measured, and the arithmetic holds up.** `torch.cuda.max_memory_allocated`
+on rank 0:
 
-Note also the gap between *allocated* and *reserved*: PyTorch's caching
-allocator held 63.83 GiB while only 29.08 GiB was live, and `nvidia-smi` showed
-~50 GiB average with 68 GiB peaks during the same run. When comparing against a
-prediction, be clear which of the three numbers you are looking at. LoRA is now a choice about iteration speed and adapter portability
+| run | allocated | reserved | % of a 268.6 GiB card |
+|---|---|---|---|
+| full fine-tune, 25 steps | **25.06 GiB** | 37.81 GiB | 9.3% / 14.1% |
+| LoRA, 584 steps (full epoch) | 29.08 GiB | 63.83 GiB | 10.8% / 23.8% |
+
+Sharded full fine-tuning of 27B really does fit in about 25 GiB per GPU, close
+to the states-only estimate above, with activations adding only a few GiB at
+`PER_DEVICE_BATCH_SIZE=8` / `MAX_SEQ_LEN=1024` and activation checkpointing on.
+
+**Do not read those rows as "full FT is cheaper than LoRA".** They are not
+comparable: the LoRA figure is a high-water mark over 584 steps and an
+evaluation across all 3,929 held-out examples, while the full-FT figure covers
+25 steps and 200 eval examples — far fewer batches sampled, and fewer chances
+to hit a long one. Peak memory is a maximum, and a longer run samples more of
+the distribution.
+
+Note also the gap between *allocated* and *reserved*: during the LoRA run the
+caching allocator held 63.83 GiB while only 29.08 GiB was live, and `nvidia-smi`
+showed ~50 GiB average with 68 GiB peaks. Three numbers, one run — when
+comparing against a prediction, say which you mean. LoRA is now a choice about iteration speed and adapter portability
 rather than a workaround.
 
 The one place full fine-tuning still costs you is checkpointing: a
@@ -309,12 +318,16 @@ correction is stated rather than the guess softened.
   both training scripts (teardown error lines went 62 to 0). The same race sat
   in front of `train_full.py`'s 54GB write and is fixed there too.
 
-- **Checkpoint writes run at ~40 MB/s to this shared filesystem.** Measured: a
-  LoRA checkpoint is ~2.6GB (870MB adapter + 1.7GB optimizer + 54MB FSDP model)
-  and takes ~65s. Extrapolated, a 54GB `FULL_STATE_DICT` save takes ~22 minutes
-  -- inside `ddp_timeout=7200`, and the reason `train_full.py` defaults to
-  `SAVE_STRATEGY=no`. If you do enable mid-run saves on the full path, budget
-  that per save.
+- **Write throughput depends enormously on file shape — don't extrapolate from
+  one to the other.** A LoRA step checkpoint is ~2.6GB spread over many files
+  (870MB adapter, 1.7GB optimizer, 16 per-rank RNG states, scheduler, trainer
+  state) and takes ~65s: about **40 MB/s**. The full fine-tune's terminal save
+  is 50.1 GiB in **two** large safetensors shards and completed in **3m51s —
+  about 214 MiB/s**, five times faster per byte. An earlier version of this file
+  projected ~22 minutes for that save by scaling the small-file rate; the real
+  figure is under four minutes. Both are comfortably inside
+  `ddp_timeout=7200`, which is why `SAVE_STRATEGY=no` is a default worth
+  revisiting rather than a necessity.
 
 ## Provenance
 

@@ -72,7 +72,9 @@ export MAX_EVAL_EXAMPLES="${MAX_EVAL_EXAMPLES:--1}"   # -1 = all 3,929
 export PYTHONDONTWRITEBYTECODE=1
 
 export SAVE_STRATEGY="${SAVE_STRATEGY:-no}"
-export SAVE_STEPS="${SAVE_STEPS:-500}"
+# SAVE_STEPS is defined with the short-run knobs above; only SAVE_STRATEGY is
+# full-FT-specific, because a 54GB FULL_STATE_DICT gather is not something you
+# want happening every few hundred steps by default.
 
 # --- Interconnect ------------------------------------------------------------
 export NCCL_DEBUG=WARN               # INFO if you need to debug IB reachability
