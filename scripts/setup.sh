@@ -45,11 +45,12 @@ fi
 "$VENV_DIR/bin/pip" install --quiet --upgrade pip setuptools wheel
 
 # --- Step 2: install the pinned stack --------------------------------------
-# torch is listed first in requirements.txt and pulled from the cu130 index.
-# Do not reorder: a CUDA 12.x torch has no sm_103 kernels and B300 will fail
-# with "no kernel image is available for execution on the device".
+# A single `pip install -r` resolves the whole file at once, so the order of
+# lines in requirements.txt is not install order -- see the corrected notes at
+# the top of that file. What matters is the --extra-index-url, which makes the
+# +cu130 local version resolvable.
 echo ""
-echo "Installing pinned stack (this takes several minutes -- ~3GB of wheels)..."
+echo "Installing pinned stack (this takes several minutes -- ~8GB installed)..."
 "$VENV_DIR/bin/pip" install -r "$REPO_DIR/requirements.txt"
 
 # --- Step 3: copy scripts to the shared filesystem -------------------------
@@ -96,8 +97,13 @@ print('transformers   :', transformers.__version__)
 print('peft           :', peft.__version__)
 " || {
     echo ""
-    echo "!! GPU verification FAILED. Most likely cause: torch wheel without"
-    echo "!! sm_103 kernels. Check that torch reports '+cu130'."
+    echo "!! GPU verification FAILED."
+    echo "!! NOTE: '+cu130' is not the thing to check -- no published torch"
+    echo "!! 2.13.0 wheel contains sm_103 SASS at all. B300 runs the sm_100"
+    echo "!! code path under Blackwell minor-version compatibility, and that is"
+    echo "!! expected and working. Look instead at: driver/CUDA version on the"
+    echo "!! worker (needs CUDA 13), whether the GPU was actually allocated"
+    echo "!! (nvidia-smi inside the job), and the full error from torch."
     exit 1
 }
 

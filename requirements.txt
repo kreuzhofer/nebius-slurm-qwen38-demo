@@ -1,12 +1,24 @@
 # Pinned stack for Qwen3.8-27B LoRA SFT + vLLM serving on NVIDIA B300 (sm_103).
 #
-# Install order matters -- see scripts/setup.sh. torch must come from the cu130
-# index FIRST, because:
-#   * B300 is compute capability 10.3 (sm_103). The default PyPI torch wheels and
-#     anything built for CUDA 12.4 contain no sm_103 kernels and will not run.
-#   * vllm==0.28.0 hard-pins `torch==2.13.0`. A local-version wheel
-#     (2.13.0+cu130) satisfies that pin, so installing it first stops pip from
-#     pulling the non-CUDA-13 build over the top.
+# Verified facts about this pin set, corrected after actually installing it:
+#
+#   * The default PyPI `torch==2.13.0` IS the CUDA 13.0 build (CUDA_STABLE is
+#     13.0 for this release), so there is no CUDA-12.x build of this version to
+#     be "pulled over the top". The --extra-index-url below is what makes the
+#     +cu130 local version resolvable; the ordering within this file is not
+#     load-bearing, because a single `pip install -r` resolves the whole file at
+#     once. File order is not install order.
+#   * NO published torch 2.13.0 wheel contains sm_103 SASS -- x86_64 cu130 ships
+#     {75, 80, 86, 90, 100, 120}. B300 (compute capability 10.3) runs the sm_100
+#     code under NVIDIA's Blackwell same-major/higher-minor compatibility rule.
+#     Measured on this cluster: torch 2.13.0+cu130 reports sm_103, cuda
+#     available, and a finite bf16 matmul. So "+cu130" is NOT a useful
+#     discriminator when diagnosing an sm_103 failure.
+#   * vllm==0.28.0 does hard-pin `torch==2.13.0`, and 2.13.0+cu130 satisfies it
+#     under the PyPA local-version rule.
+#
+# Installed size: the resulting venv is ~8.1 GB, not the ~3 GB of wheels this
+# file used to claim.
 
 --extra-index-url https://download.pytorch.org/whl/cu130
 
@@ -18,10 +30,15 @@ peft==0.20.0
 datasets==4.6.0
 accelerate==1.13.0
 
-# `kernels` fetches the fused Gated DeltaNet / causal-conv1d kernels from the Hub.
-# Without it, transformers silently falls back to the pure-PyTorch
-# `torch_chunk_gated_delta_rule` path for 48 of the model's 64 layers -- correct
-# but slow and memory-hungry. Requires use_kernels=True at load time.
+# `kernels` fetches Gated DeltaNet / causal-conv1d kernels from the Hub at model
+# load time. Requires use_kernels=True.
+#
+# Corrected after measuring on B300: this does NOT get you the fused GDN *layer*
+# kernel, whose mapping is gated to compute capability exactly 121. B300 is 103,
+# so it falls through to ungated function-level kernels -- better than the
+# pure-PyTorch `torch_chunk_gated_delta_rule` fallback, but not the fused layer
+# path. Note this also means model load makes a live Hub request, unauthenticated
+# unless HF_TOKEN is set.
 kernels>=0.16.0,<0.17
 
 # Evaluation chart only.

@@ -15,11 +15,18 @@
 # layers cache at all -- the other 48 are linear attention, which keeps a
 # small fixed-size recurrent state per sequence instead.
 #
-# If you do want tensor parallelism, note that the head counts
-# (24 query / 4 KV / 16 linear-key / 48 linear-value) constrain the valid
-# sizes. TP in {1,2,4,8} should be safe; TP=16 is expected to fail on the
-# linear-key head count. I have NOT verified that on this cluster -- test
-# before relying on a multi-GPU topology.
+# If you do want tensor parallelism, the head counts constrain the valid sizes:
+# 24 query / 4 KV / 16 linear-key / 48 linear-value, all read from config.json
+# and confirmed against the downloaded checkpoint.
+#
+# TP=16 fails on the **24 query heads**, not the linear-key count -- 16 divides
+# 16 exactly, so the earlier note here had the wrong reason. TP=3 and TP=6 also
+# fail, on key_dim=2048, after passing every head-count check. TP in {1,2,4,8}
+# is the safe set.
+#
+# Still unverified on this cluster: only TP=1 has been run. There is also a
+# reported silent post-load hang at TP=4 for Qwen3.5/3.6 models, though on
+# different hardware and an older vLLM. Test before relying on multi-GPU.
 #
 # QUERYING:
 #   squeue --me                # NODELIST tells you which worker it landed on

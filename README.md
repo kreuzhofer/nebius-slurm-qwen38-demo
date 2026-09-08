@@ -9,12 +9,15 @@ directly comparable:
 
 | | script | trainable params | LR | output |
 |---|---|---|---|---|
-| **LoRA** | `train_lora.sbatch` | ~0.4% (adapter) | 2e-4 | adapter, needs a merge step |
+| **LoRA** | `train_lora.sbatch` | 0.80% (adapter) | 2e-4 | adapter, needs a merge step |
 | **Full** | `train_full.sbatch` | all ~26.9B | 1e-5 | standalone checkpoint |
 
-Task: [`b-mc2/sql-create-context`](https://huggingface.co/datasets/b-mc2/sql-create-context)
-(74,659 train / 3,930 held out). Metric: exact-match accuracy on 100 held-out
-questions after light normalization.
+Task: [`b-mc2/sql-create-context`](https://huggingface.co/datasets/b-mc2/sql-create-context).
+The raw `train` split holds **78,577** examples; the seed-42 95/5 split used by
+both training and evaluation gives **74,648 train / 3,929 held out**, so one
+epoch is **584 optimizer steps** at effective batch 128. Metric: exact-match
+accuracy on 500 held-out questions after light normalization (100 for smoke
+runs). All figures measured, not estimated.
 
 ## Cluster
 
@@ -31,44 +34,66 @@ Check yours with `sinfo -o "%P %N %G"` before trusting the pins in
 ## Quick start
 
 ```bash
-# 0. one-time environment setup on the login node (~3GB of wheels)
+# 0. one-time environment setup on the login node (~8GB installed)
 git clone https://github.com/kreuzhofer/nebius-slurm-qwen38-lora-demo.git
 cd nebius-slurm-qwen38-lora-demo
 bash scripts/setup.sh                 # ends with a GPU smoke test on a worker
 source /mnt/data/qwen38-demo/activate.sh
 
-# 1. fetch model (~56GB) + dataset (~50MB)
+# 1. fetch model (52GB, 18 shards) + dataset (17MB on disk)
 bash /mnt/data/qwen38-demo/scripts/download.sh
 
-# 2. train on 16 GPUs -- pick one
+# 2. smoke-test the whole path first: 25 steps, ~6 min, saves twice
+MAX_STEPS=25 SAVE_STEPS=10 MAX_EVAL_EXAMPLES=200 \
+    sbatch --export=ALL /mnt/data/qwen38-demo/scripts/train_lora.sbatch
+
+# 3. train for real on 16 GPUs -- pick one. One epoch = 584 steps, ~15-20 min.
 sbatch /mnt/data/qwen38-demo/scripts/train_lora.sbatch    # LoRA adapter
 sbatch /mnt/data/qwen38-demo/scripts/train_full.sbatch    # all 26.9B params
 squeue --me
 tail -f /mnt/data/qwen38-demo/logs/train_lora_<JOBID>.out
 
-# 3. LoRA ONLY -- merge the adapter into a standalone checkpoint.
+# 4. LoRA ONLY -- merge the adapter into a standalone checkpoint (~5 min).
 #    Skip this entirely if you ran train_full.sbatch.
+#    NOTE: this is the one step that does not source the venv for you. Use the
+#    venv interpreter explicitly, because bare `python` on the worker is
+#    /usr/bin/python, which has no torch and no peft.
 srun --partition=main --nodes=1 --gpus-per-node=1 --time=01:00:00 \
-    python /mnt/data/qwen38-demo/scripts/merge_lora.py \
+    /mnt/data/qwen38-demo/venv/bin/python \
+    /mnt/data/qwen38-demo/scripts/merge_lora.py \
     /mnt/data/qwen38-demo/output/qwen3.8-27b-sql-lora \
     /mnt/data/qwen38-demo/models/Qwen3.8-27B \
     /mnt/data/qwen38-demo/output/qwen3.8-27b-sql
 
-# 4. score base vs fine-tuned
-sbatch /mnt/data/qwen38-demo/scripts/evaluate.sbatch      # defaults to the merged LoRA path
+# 5. score base vs fine-tuned. Every argument is passed through to
+#    evaluate.py, so pass --tuned-model once per model you want in one chart;
+#    the base model's predictions are generated only once.
+sbatch /mnt/data/qwen38-demo/scripts/evaluate.sbatch          # base vs merged LoRA, N=500
 sbatch /mnt/data/qwen38-demo/scripts/evaluate.sbatch \
-    /mnt/data/qwen38-demo/models/Qwen3.8-27B \
-    /mnt/data/qwen38-demo/output/qwen3.8-27b-sql-full      # full fine-tune
-#    -> /mnt/data/qwen38-demo/results/qwen3.8-27b-lora_results.{json,md} + .png
+    --tuned-model /mnt/data/qwen38-demo/output/qwen3.8-27b-sql \
+    --tuned-model /mnt/data/qwen38-demo/output/qwen3.8-27b-sql-full
+#    Output filenames derive from the tuned model names, so separate
+#    comparisons cannot overwrite each other:
+#    -> results/qwen3.8-27b-sql_qwen3.8-27b-sql-full_results.{json,md} + .png
 
-# 5. serve and query
+# 6. serve and query. vLLM takes several minutes to load 51GB, and query.sh
+#    reads the hostname from squeue -- which is empty while the job is still
+#    PENDING -- so wait for the server to answer before querying.
 sbatch /mnt/data/qwen38-demo/scripts/serve.sbatch
+HOST=$(squeue --noheader -n qwen38-serve -o "%N" | head -1)
+until curl -sf -m 3 "http://$HOST:8000/v1/models" >/dev/null; do sleep 10; done
 bash scripts/query.sh
 ```
 
 Re-run `bash scripts/setup.sh` after editing anything in `scripts/` — it
 re-syncs the shared copy under `/mnt/data/qwen38-demo/scripts/` that the Slurm
-jobs actually execute.
+jobs actually execute. The sync is `rsync -a --delete`, so renamed and deleted
+scripts are pruned rather than left behind as stale copies.
+
+Downloads run unauthenticated unless you export `HF_TOKEN`, which the Hub warns
+about and which costs you rate limit and speed on both the model fetch and the
+Hub kernel fetch at model load. Neither model nor dataset is gated, so a token
+is optional.
 
 ## Layout
 
@@ -138,7 +163,19 @@ a module that does not exist in a text-only instantiation.
 
 **Sequence packing is unavailable.** The Gated DeltaNet recurrent state cannot
 be reset mid-sequence, so expect lower tokens/s per GPU than a dense model of
-similar size.
+similar size. Measured on this cluster: steady-state LoRA training is
+**~1.2-1.75 s/step** at effective batch 128 (so a 584-step epoch is roughly
+15-20 minutes), which works out to ~0.55 samples/s/GPU or ~62 unpadded
+tokens/s/GPU. Sequences are short here -- mean 112 tokens, max 239 -- so
+`MAX_SEQ_LEN=1024` never actually truncates or drops anything.
+
+**`use_kernels=True` does not get B300 the fused Gated DeltaNet *layer*
+kernel.** That mapping is gated to compute capability exactly 121; B300 is 103,
+so it falls through to ungated function-level kernels. This is neither the fused
+layer path nor the pure-PyTorch fallback, and it means the flag buys less here
+than on a cc-121 device. Note also that `use_kernels=True` makes a **live
+HuggingFace Hub request at model load**, so training has a network dependency at
+startup -- and it is unauthenticated unless you set `HF_TOKEN`.
 
 **Full fine-tuning is no longer a stretch, which is the headline result.** In
 the H100-era version of this demo, full fine-tuning a *smaller* 32B model OOM'd
@@ -163,24 +200,43 @@ step 0, but check them before quoting results.
 - **`--language-model-only`** in `serve.sbatch` is reported to exist for this
   model family but is unverified against `vllm==0.28.0`. If the server rejects
   it, drop the flag — nothing else depends on it.
-- **`--tensor-parallel-size 16` is expected to fail.** The head counts
-  (24 query / 4 KV / 16 linear-key / 48 linear-value) constrain valid TP to
-  `{1,2,4,8}`. The head counts are read from `config.json`; the divisibility
-  constraint is inferred, not tested. TP=1 is the default here and sidesteps it.
-- **A determinism bug in the chunked gated-delta-rule kernel** is reported to
-  affect sm_103 specifically, fixed in `flash-linear-attention==0.5.2`. Only
-  relevant if you install that classic fast path instead of Hub `kernels`.
-  There is a commented-out pin in `requirements.txt`.
+- **`--tensor-parallel-size 16` fails on the 24 query heads**, not on the
+  linear-key count as this file previously claimed -- 16 linear-key heads divide
+  16 exactly. TP=3 and TP=6 also fail, on `key_dim=2048`, after passing every
+  head-count check. Valid set is `{1,2,4,8}`. All four head counts are confirmed
+  against the downloaded `config.json` (24 query / 4 KV / 16 linear-key /
+  48 linear-value). Only TP=1 has actually been run here.
+- **The sm_103 determinism bug does not apply as pinned, and the commented-out
+  pin in `requirements.txt` is a trap rather than a remedy.** The bug is real
+  (fla#945, fixed by #953 in 0.5.2) and worse than usually described -- the
+  backward recomputes the forward state, so gradients disagree with the loss.
+  But the pip `fla` module is imported whenever it is *importable*, regardless
+  of `use_kernels`, so the rule is "never let `fla-core < 0.5.2` be importable".
+  Verified after a real training run: `fla`, `fla_core`, `causal_conv1d` and
+  `mamba_ssm` are all absent from the venv and nothing pulls them in, so the bug
+  cannot reach this pipeline. Uncommenting that line is the only way to
+  introduce it.
 - **Fine-tuning purely on non-thinking data should be expected to degrade
   thinking mode.** That is fine for this SQL demo, which explicitly wants
   terse non-reasoning output, but do not reuse the adapter for general chat.
-- **The save paths** are the most likely thing to need a tweak on the first
-  run. `train_lora.py` falls back to recovering from the last step checkpoint
-  if `adapter_model.safetensors` is missing. For `train_full.py`, the final
-  `FULL_STATE_DICT` gather is the risky step — it takes several minutes and
-  looks like a hang; if it times out anyway, raise `ddp_timeout`/`NCCL_TIMEOUT`
-  further or switch to `SAVE_STRATEGY=steps` with
-  `state_dict_type="SHARDED_STATE_DICT"` and consolidate afterwards.
+- **The save path did break on the first run, and the cause was not a
+  timeout.** `save_model()`'s state-dict gather is collective but only rank 0
+  writes. Without a barrier afterwards, ranks 1-15 returned from the gather,
+  fell off the end of `main()` and exited; their CUDA contexts tore down, the
+  driver shut down under rank 0 mid-write, and the process died between
+  safetensors' write and its atomic rename. Symptom: a complete 870MB adapter
+  left as an unrenamed `.tmp*` file, `adapter_model.safetensors` absent, and
+  `CUDA driver error: unknown error` from `_hasPrimaryContext` at teardown.
+  Fixed with `trainer.accelerator.wait_for_everyone()` at the end of `main()` in
+  both training scripts (teardown error lines went 62 to 0). The same race sat
+  in front of `train_full.py`'s 54GB write and is fixed there too.
+
+- **Checkpoint writes run at ~40 MB/s to this shared filesystem.** Measured: a
+  LoRA checkpoint is ~2.6GB (870MB adapter + 1.7GB optimizer + 54MB FSDP model)
+  and takes ~65s. Extrapolated, a 54GB `FULL_STATE_DICT` save takes ~22 minutes
+  -- inside `ddp_timeout=7200`, and the reason `train_full.py` defaults to
+  `SAVE_STRATEGY=no`. If you do enable mid-run saves on the full path, budget
+  that per save.
 
 ## Provenance
 
@@ -188,7 +244,14 @@ step 0, but check them before quoting results.
 [kreuzhofer/nebius-slurm-ml-training-and-inference-demo](https://github.com/kreuzhofer/nebius-slurm-ml-training-and-inference-demo)
 (MIT), which did the same exercise with Qwen3-8B and Qwen3-32B on H100s and
 reached 88% and 84% exact match respectively from base rates of 2–3%. This repo
-keeps only what the Qwen3.8 experiment needs; the Terraform, the 235B
-multi-node Ray serving path, and the full-fine-tune scripts stayed behind.
+keeps only what the Qwen3.8 experiment needs; the Terraform and the 235B
+multi-node Ray serving path stayed behind.
+
+**Do not carry the 2–3% base rate over as an expectation.** It is from the
+Qwen3-era 8B/32B models on different hardware. On the architecturally identical
+Qwen3.6-27B, this same dataset measures a base rate of roughly **39%**, so
+expect something like 39% to the mid-70s rather than 2% to 88%. A measured base
+rate near 2% here is evidence of a broken prompt or normalisation, not of a weak
+model.
 
 MIT licensed — see [LICENSE](LICENSE).
