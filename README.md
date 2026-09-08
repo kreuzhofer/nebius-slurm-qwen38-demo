@@ -247,8 +247,14 @@ on rank 0:
 
 | run | allocated | reserved | % of a 268.6 GiB card |
 |---|---|---|---|
-| full fine-tune, 25 steps | **25.06 GiB** | 37.81 GiB | 9.3% / 14.1% |
+| full fine-tune, 584 steps (full epoch) | **35.45 GiB** | 49.78 GiB | 13.2% / 18.5% |
+| full fine-tune, 25 steps | 25.06 GiB | 37.81 GiB | 9.3% / 14.1% |
 | LoRA, 584 steps (full epoch) | 29.08 GiB | 63.83 GiB | 10.8% / 23.8% |
+
+Note the first two rows: **the same configuration peaked 41% higher over 584
+steps than over 25** (35.45 vs 25.06 GiB). Peak memory is a high-water mark, and
+a longer run samples more of the batch-length distribution. Short runs
+systematically understate it — budget from a full run, not a smoke test.
 
 Sharded full fine-tuning of 27B really does fit in about 25 GiB per GPU, close
 to the states-only estimate above, with activations adding only a few GiB at
@@ -264,8 +270,30 @@ the distribution.
 Note also the gap between *allocated* and *reserved*: during the LoRA run the
 caching allocator held 63.83 GiB while only 29.08 GiB was live, and `nvidia-smi`
 showed ~50 GiB average with 68 GiB peaks. Three numbers, one run — when
-comparing against a prediction, say which you mean. LoRA is now a choice about iteration speed and adapter portability
-rather than a workaround.
+comparing against a prediction, say which you mean.
+
+**And LoRA is not the faster option here, which was a surprise.** Both paths
+ran one full epoch, 584 steps, same data and batch:
+
+| | wall clock | s/step | trainable | artifact on disk | eval loss |
+|---|---|---|---|---|---|
+| LoRA (attn+MLP, r=32) | 15.1 min | 1.55 | 159 M | 4.3 GB adapter | **0.01691** |
+| **Full fine-tune** | **11.9 min** | **1.22** | 27.1 B | 51 GB checkpoint | 0.01873 |
+
+Full fine-tuning ran the epoch **21% faster** while training 170x more
+parameters. Part of that is the LoRA run writing a mid-run checkpoint at step
+500 that the full run skipped (`SAVE_STRATEGY=no`); correcting for it still
+leaves full FT ahead by roughly 15%. The mechanism is that under FSDP
+`full_shard` the dominant per-step cost is the parameter all-gather for forward
+and backward, which **both** paths pay in full — LoRA saves on the optimizer
+update and on gradient traffic, neither of which dominates here, while adding
+PEFT wrapper overhead on 256 modules and still running the entire base model
+forward and backward.
+
+So on this hardware LoRA's remaining advantages are **adapter portability and
+disk** (4.3 GB versus 51 GB, and you keep the base weights shared), not
+iteration speed. It also reached a slightly *better* eval loss, though at a 20x
+higher learning rate that was never separately tuned for the full path.
 
 The one place full fine-tuning still costs you is checkpointing: a
 `FULL_STATE_DICT` save gathers ~54 GB across ranks, and doing that every few
