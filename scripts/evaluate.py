@@ -67,9 +67,75 @@ def generate_sql(model, tokenizer, schema, question, max_new_tokens=256):
     return response.strip()
 
 
-def normalize_sql(sql):
-    """Lowercase, collapse whitespace, drop a trailing semicolon."""
+def raw_exact(sql):
+    """
+    The old normalisation: lowercase, collapse whitespace, drop a trailing `;`.
+
+    Kept only as a **diagnostic**, never as the headline. It answers "did the
+    model emit SQL that is directly usable with no post-processing at all",
+    which is a real question -- but it is not a measure of SQL correctness, and
+    reporting it as one is how this repo previously scored the base model at 1%.
+    """
     return " ".join(sql.lower().strip().rstrip(";").split())
+
+
+def normalize_sql(sql):
+    """
+    Extract the SQL from a model response, then normalise it for comparison.
+
+    Ported from `scripts/evaluate.py` in kreuzhofer/dgx-manager-fine-tune-recipes,
+    which is the reference implementation used for the Qwen3.6/3.8 numbers
+    measured on DGX Spark. Adopting it verbatim is deliberate: it makes results
+    from this repo directly comparable with those, instead of incomparable.
+
+    WHY THIS MATTERS, measured on 100 held-out examples with the base model:
+    without the extraction and quote steps below, the base scores **1%**; with
+    them it scores **58%**. The difference is entirely parsing. 72 of 100 base
+    answers arrive inside a markdown fence, and the base writes ANSI-standard
+    `'single'` quotes while this dataset stores non-standard `"double"` ones.
+    Neither is a SQL error. Verified not to be a prompt artifact: across three
+    prompt variants the base produced double quotes 0-1 times in 100.
+
+    Handles three output styles:
+      1. Plain SQL (raw SELECT ...)
+      2. Closed markdown code block: ```sql ... ``` (chat-model style)
+      3. Verbose reasoning output where SQL follows a label, possibly inside an
+         unclosed backtick span, possibly truncated mid-thought.
+    """
+    if sql is None:
+        # Thinking-mode responses that burn max_tokens on reasoning and never
+        # emit SQL come back as content=null with finish_reason="length".
+        # Count as a miss rather than crashing the accuracy computation.
+        return ""
+
+    s = sql.strip()
+
+    # 1. Closed markdown code block -- most reliable signal.
+    code_block = re.search(r"```(?:sql)?\s*\n?(.*?)```", s, re.DOTALL | re.IGNORECASE)
+    if code_block:
+        s = code_block.group(1).strip()
+    else:
+        # 2. Otherwise take from the LAST SELECT, which is almost always the
+        #    final answer, and cut at whatever follows it.
+        matches = list(re.finditer(r"\bSELECT\b", s, re.IGNORECASE))
+        if matches:
+            tail = s[matches[-1].start():]
+            cuts = [tail.find(c) for c in
+                    [";", "```", "\n`", "\n\nNote", "\n\nThis ", "\n\nExplanation"]]
+            cuts = [c for c in cuts if c > 0]
+            if cuts:
+                tail = tail[:min(cuts)]
+            s = tail.strip().lstrip("`").strip()
+
+    # Chat-template artefacts.
+    for tag in ["<end_of_turn>", "<start_of_turn>", "<|im_end|>", "<|im_start|>",
+                "model", "user"]:
+        s = s.split(tag)[0]
+    s = s.strip().rstrip(";").rstrip("`").strip()
+
+    # Quote convention: the model writes ANSI '...', the dataset stores "...".
+    s = s.replace("'", '"')
+    return " ".join(s.lower().split())
 
 
 def evaluate_model(model_path, test_data, label, max_new_tokens):
@@ -157,7 +223,9 @@ def main():
     )
     parser.add_argument("--dataset", default=f"{demo_dir}/datasets/sql-create-context")
     parser.add_argument("--num-examples", type=int, default=500)
-    parser.add_argument("--max-new-tokens", type=int, default=256)
+    # 512 to match the reference DGX Spark runs, so numbers are comparable.
+    # Measured here: answers never exceed ~230 chars, so this is slack, not need.
+    parser.add_argument("--max-new-tokens", type=int, default=512)
     parser.add_argument("--results-dir", default=f"{demo_dir}/results")
     parser.add_argument(
         "--prefix",
@@ -195,6 +263,15 @@ def main():
     correct = {lab: sum(n == g for n, g in zip(norm[lab], norm_truth)) for lab in labels}
     acc = {lab: correct[lab] / num * 100 for lab in labels}
 
+    # Diagnostic only: exact match with no extraction and no quote handling.
+    # Answers "was the output directly usable as-is", NOT "was the SQL right".
+    raw_truth = [raw_exact(g) for g in ground_truth]
+    raw_correct = {
+        lab: sum(raw_exact(p) == t for p, t in zip(preds[lab], raw_truth))
+        for lab in labels
+    }
+    raw_acc = {lab: raw_correct[lab] / num * 100 for lab in labels}
+
     base_label, tuned_labels = labels[0], labels[1:]
     width = max(len(lab) for lab in labels)
 
@@ -205,6 +282,10 @@ def main():
     for lab in tuned_labels:
         delta = acc[lab] - acc[base_label]
         print(f"  {lab:{width}} : {acc[lab]:5.1f}%  ({correct[lab]}/{num})  {delta:+5.1f}pp")
+    print(f"{'=' * 60}")
+    print("  Diagnostic - directly usable with no post-processing:")
+    for lab in labels:
+        print(f"    {lab:{width}} : {raw_acc[lab]:5.1f}%  ({raw_correct[lab]}/{num})")
     print(f"{'=' * 60}")
 
     # Examples each fine-tune fixed, measured against the base model.
@@ -266,6 +347,8 @@ def main():
                         "accuracy_pct": round(acc[lab], 2),
                         "correct": correct[lab],
                         "improvement_pct": round(acc[lab] - acc[base_label], 2),
+                        "raw_exact_pct": round(raw_acc[lab], 2),
+                        "raw_exact_correct": raw_correct[lab],
                         "fixed_vs_base": len(fixed.get(lab, [])),
                     }
                     for lab, path in zip(labels, paths)
@@ -295,15 +378,21 @@ def main():
     md_path = os.path.join(args.results_dir, f"{prefix}results.md")
     with open(md_path, "w") as f:
         f.write(f"# SQL exact-match results ({num} held-out examples)\n\n")
-        f.write("| Model | Path | Accuracy | Correct | vs base |\n")
-        f.write("|---|---|---|---|---|\n")
+        f.write("| Model | Path | Accuracy | Correct | vs base | Usable as-is |\n")
+        f.write("|---|---|---|---|---|---|\n")
         for lab, path in zip(labels, paths):
             delta = "-" if lab == base_label else f"{acc[lab] - acc[base_label]:+.1f}pp"
             f.write(
                 f"| {lab} | `{path}` | {acc[lab]:.1f}% | "
-                f"{correct[lab]}/{num} | {delta} |\n"
+                f"{correct[lab]}/{num} | {delta} | {raw_acc[lab]:.1f}% |\n"
             )
-        f.write("\n")
+        f.write(
+            "\n**Accuracy** extracts the SQL from the response (markdown fence or "
+            "last `SELECT`) and normalises quote style, case and whitespace before "
+            "comparing. **Usable as-is** is the same comparison with no extraction "
+            "and no quote handling — a diagnostic for whether the output can be "
+            "used without post-processing, not a measure of SQL correctness.\n\n"
+        )
         for lab in tuned_labels:
             f.write(f"## Examples {lab} fixed ({len(fixed[lab])} total)\n\n")
             for i in fixed[lab][:5]:

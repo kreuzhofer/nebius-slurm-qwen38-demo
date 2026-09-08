@@ -19,31 +19,37 @@ epoch is **584 optimizer steps** at effective batch 128. Metric: exact-match
 accuracy on 500 held-out questions after light normalization (100 for smoke
 runs). All figures measured, not estimated.
 
-**Read the metric carefully — it mostly measures formatting compliance, not SQL
-ability.** Measured on 100 held-out examples, base model vs a 25-step smoke
-adapter:
+**The metric extracts the SQL before comparing it, and that step is load-bearing.**
+`normalize_sql` pulls the query out of the response — a closed ```` ```sql ```` block
+if there is one, otherwise from the last `SELECT` — strips chat-template
+artefacts, normalises `'single'` quotes to the `"double"` quotes this dataset
+stores, then lowercases and collapses whitespace. It is ported verbatim from the
+reference implementation in
+[kreuzhofer/dgx-manager-fine-tune-recipes](https://github.com/kreuzhofer/dgx-manager-fine-tune-recipes)
+(`scripts/evaluate.py`), so numbers here are directly comparable with the
+Qwen3.6/3.8 results measured on DGX Spark.
 
-| normalisation applied | base | 25-step LoRA |
+Measured on 100 held-out examples, base model vs a **25-step** smoke adapter:
+
+| | base | 25-step LoRA |
 |---|---|---|
-| as shipped (lowercase, collapse whitespace, strip trailing `;`) | **1%** | 72% |
-| + strip markdown code fences | 3% | 72% |
-| + normalise quote style (`'` → `"`) | 16% | 73% |
-| **+ both** | **58%** | **73%** |
-| answers wrapped in a ``` fence | **72%** | 0% |
+| **Accuracy** (extract + normalise) | **58%** | **74%** |
+| _Diagnostic:_ usable as-is, no post-processing | 1% | 72% |
 
-The base model writes largely correct SQL and scores 1% because 72% of its
-answers arrive inside markdown fences and it prefers `'single'` quotes where
-this dataset uses `"double"`. Neither is a SQL error; both are total exact-match
-failures. So the eye-catching "+71pp" is mostly the model learning three
-conventions — bare SQL, no fences, double quotes — while the **semantic** gain
-is about **58% → 73%, roughly +15pp**. That is also why a 25-step adapter
-already reaches 72%: format compliance is learned almost immediately, and that
-is what this metric chiefly rewards.
+Both columns are real, and the gap between them is the point. The base model
+writes largely correct SQL and is unusable without post-processing: 72 of its
+100 answers arrive wrapped in a markdown fence, and it uses ANSI-standard
+`'single'` quotes where this dataset stores non-standard `"double"` ones.
+Neither is a SQL error. Fine-tuning fixes the packaging almost immediately —
+that is the 1% → 72% column — while adding a more modest **+16pp** of actual
+correctness.
 
-Both numbers are worth having: the strict one answers "can I use the output
-without post-processing", the normalised one answers "does the model know SQL".
-Whether the published metric should change is an open decision, not a settled
-one.
+An earlier version of this file reported the base model at 1% as its headline.
+That was a harness defect, not a property of the model: the shipped
+`normalize_sql` had lost the extraction and quote-handling steps. Verified not
+to be a prompt artifact — across three prompt variants the base produced double
+quotes 0-1 times in 100 — and not an engine artifact, since vLLM and
+`transformers.generate()` score identically on the same prompt.
 
 ## Cluster
 
