@@ -19,6 +19,32 @@ epoch is **584 optimizer steps** at effective batch 128. Metric: exact-match
 accuracy on 500 held-out questions after light normalization (100 for smoke
 runs). All figures measured, not estimated.
 
+**Read the metric carefully — it mostly measures formatting compliance, not SQL
+ability.** Measured on 100 held-out examples, base model vs a 25-step smoke
+adapter:
+
+| normalisation applied | base | 25-step LoRA |
+|---|---|---|
+| as shipped (lowercase, collapse whitespace, strip trailing `;`) | **1%** | 72% |
+| + strip markdown code fences | 3% | 72% |
+| + normalise quote style (`'` → `"`) | 16% | 73% |
+| **+ both** | **58%** | **73%** |
+| answers wrapped in a ``` fence | **72%** | 0% |
+
+The base model writes largely correct SQL and scores 1% because 72% of its
+answers arrive inside markdown fences and it prefers `'single'` quotes where
+this dataset uses `"double"`. Neither is a SQL error; both are total exact-match
+failures. So the eye-catching "+71pp" is mostly the model learning three
+conventions — bare SQL, no fences, double quotes — while the **semantic** gain
+is about **58% → 73%, roughly +15pp**. That is also why a 25-step adapter
+already reaches 72%: format compliance is learned almost immediately, and that
+is what this metric chiefly rewards.
+
+Both numbers are worth having: the strict one answers "can I use the output
+without post-processing", the normalised one answers "does the model know SQL".
+Whether the published metric should change is an open decision, not a settled
+one.
+
 ## Cluster
 
 Written for and verified against:
@@ -194,12 +220,17 @@ Set `SAVE_STRATEGY=steps` if you want resumability and can afford the I/O.
 
 ## Known risks
 
-Things I flagged during the port and could not fully verify. None of them block
-step 0, but check them before quoting results.
+Every item below has now been checked against this cluster, the downloaded
+checkpoint, or the installed packages. Where the original guess was wrong, the
+correction is stated rather than the guess softened.
 
-- **`--language-model-only`** in `serve.sbatch` is reported to exist for this
-  model family but is unverified against `vllm==0.28.0`. If the server rejects
-  it, drop the flag — nothing else depends on it.
+- **`--language-model-only` is verified and stays.** vLLM 0.28.0 accepts it and
+  reports `'language_model_only': True` in its parsed non-default args, with no
+  argument rejection. Two corrections to what this file used to imply: the flag
+  disables multimodal *inputs* rather than skipping construction of the vision
+  tower (that is `--skip-mm-profiling`), and on a **merged** checkpoint it is a
+  no-op regardless, because merging writes `model_type: qwen3_5_text` with no
+  `vision_config`. Harmless and correct on both the base and merged paths.
 - **`--tensor-parallel-size 16` fails on the 24 query heads**, not on the
   linear-key count as this file previously claimed -- 16 linear-key heads divide
   16 exactly. TP=3 and TP=6 also fail, on `key_dim=2048`, after passing every

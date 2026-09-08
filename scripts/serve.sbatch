@@ -76,10 +76,15 @@ echo "=========================================="
 #       reasons at length before answering -- slow, and it can overrun
 #       max_tokens before emitting any SQL.
 #   --language-model-only
-#       Skips building the vision tower, freeing memory for KV cache. This
-#       flag is reported to exist for this model family but I have not
-#       verified it against vllm 0.28.0 -- if the server rejects it as an
-#       unrecognized argument, just drop it; nothing else depends on it.
+#       VERIFIED against vllm 0.28.0 on this cluster: accepted, and it shows up
+#       as 'language_model_only': True in the server's parsed non-default args.
+#       It does NOT "skip building the vision tower to free KV cache" as this
+#       comment used to claim -- it disables multimodal *inputs*. The flag that
+#       skips vision profiling is --skip-mm-profiling.
+#       On a MERGED checkpoint it is a no-op either way: merging writes
+#       model_type qwen3_5_text with no vision_config, so there is no vision
+#       tower to disable. It is kept because it is correct and harmless for
+#       both the base (multimodal) and merged (text-only) paths.
 vllm serve "$MODEL_PATH" \
     --served-model-name "$(basename "$MODEL_PATH")" \
     --host 0.0.0.0 \
