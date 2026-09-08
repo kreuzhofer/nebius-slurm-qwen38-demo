@@ -233,6 +233,25 @@ def main():
     # an unrenamed .tmp* file, with "CUDA driver error: unknown error" from
     # _hasPrimaryContext at teardown. The recovery fallback above could not run
     # either, because the process was already gone.
+
+    # Peak GPU memory, measured rather than assumed. Trainer's own memory
+    # metrics are off by default (skip_memory_metrics=True) and nothing else
+    # here sampled the device, so the README's "~20 GiB/GPU" prediction for the
+    # full-parameter path went unverified through every run on this map.
+    #
+    # These are PyTorch's allocator counters for THIS rank. All ranks are
+    # symmetric under FSDP, so rank 0 is representative. Note `reserved` is what
+    # the caching allocator holds, which is the number to compare against HBM;
+    # actual device usage is a little higher again (NCCL buffers, kernels, CUDA
+    # context) and only nvidia-smi sees that.
+    if is_main:
+        import torch as _torch
+        if _torch.cuda.is_available():
+            print(
+                f"Peak GPU mem (rank 0): "
+                f"{_torch.cuda.max_memory_allocated() / 2**30:.2f} GiB allocated, "
+                f"{_torch.cuda.max_memory_reserved() / 2**30:.2f} GiB reserved"
+            )
     trainer.accelerator.wait_for_everyone()
 
 

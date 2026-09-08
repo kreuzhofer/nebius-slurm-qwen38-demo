@@ -4,7 +4,7 @@
 #
 # All ~26.9B text parameters are trained, sharded with FSDP2. This is the
 # variant the H100-era version of this demo could not run for a *smaller*
-# model -- 275GB of HBM per GPU turns it into a routine job (~20-28GB/GPU for
+# model -- 268.6 GiB of HBM per GPU turns it into a routine job (~20-28GB/GPU for
 # weights, gradients and optimizer state).
 #
 # HOW TO USE:

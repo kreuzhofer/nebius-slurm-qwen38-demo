@@ -10,7 +10,7 @@
 #   sbatch /mnt/data/qwen38-demo/scripts/serve.sbatch \
 #       /mnt/data/qwen38-demo/models/Qwen3.8-27B 8001
 #
-# TP=1 is the default and is sufficient: ~50GB of bf16 weights on a 275GB B300.
+# TP=1 is the default and is sufficient: ~50GB of bf16 weights on a 268.6 GiB B300.
 # The KV cache is unusually cheap for a 27B model because only 16 of the 64
 # layers cache at all -- the other 48 are linear attention, which keeps a
 # small fixed-size recurrent state per sequence instead.

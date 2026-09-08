@@ -55,7 +55,11 @@ quotes 0-1 times in 100 — and not an engine artifact, since vLLM and
 
 Written for and verified against:
 
-- 2 worker nodes × 8 **NVIDIA B300 SXM6** (275 GB HBM each, **sm_103**), 192 vCPU / 2.5 TB RAM per node
+- 2 worker nodes × 8 **NVIDIA B300 SXM6** (**268.6 GiB / 288 GB HBM** each, **sm_103**), 192 vCPU, 2.66 TiB RAM per node
+  — **4.20 TiB of VRAM across the 16 GPUs**, and 5.32 TiB of host RAM. Measured, not
+  from a spec sheet: `nvidia-smi` reports 275,040 MiB per GPU. An earlier version of
+  this file called that "275 GB", which is the MiB figure divided by 1000 and is
+  neither unit.
 - Slurm 25.11.3 via [Soperator](https://github.com/nebius/nebius-solutions-library/tree/main/soperator), partition `main`
 - Driver 580.159.04 / CUDA 13.0
 - Shared filesystem at `/mnt/data`; internet egress from both login and worker nodes
@@ -235,8 +239,8 @@ startup -- and it is unauthenticated unless you set `HF_TOKEN`.
 the H100-era version of this demo, full fine-tuning a *smaller* 32B model OOM'd
 on 16×80 GB and had to fall back to LoRA. Here, sharded full SFT of 27B costs
 roughly 20 GiB per GPU (54 GB bf16 params + 54 GB grads + 216 GB fp32 AdamW
-states, sharded 16 ways), or ~28 GiB with fp32 master weights, against 275 GB
-of HBM. LoRA is now a choice about iteration speed and adapter portability
+states, sharded 16 ways), or ~28 GiB with fp32 master weights, against **268.6 GiB**
+of HBM per GPU — about **7.4%** of each card. LoRA is now a choice about iteration speed and adapter portability
 rather than a workaround.
 
 The one place full fine-tuning still costs you is checkpointing: a

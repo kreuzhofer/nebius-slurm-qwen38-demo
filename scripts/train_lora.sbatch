@@ -40,7 +40,7 @@ export DATASET_PATH="$DEMO_DIR/datasets/sql-create-context"
 # runs so the accuracy numbers stay comparable. Measured: 584 optimizer steps
 # over the 74,648-example train split (78,577 raw, less the 5% eval split).
 #
-# There is a lot of headroom here: B300 has 275GB HBM against roughly 3GB/rank
+# There is a lot of headroom here: B300 has 268.6 GiB HBM against roughly 3GB/rank
 # of sharded frozen base weights, so activations dominate. Raise
 # PER_DEVICE_BATCH_SIZE before reaching for gradient accumulation.
 export PER_DEVICE_BATCH_SIZE=8

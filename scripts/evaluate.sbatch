@@ -3,7 +3,7 @@
 # evaluate.sbatch -- score a base model against one or more fine-tunes on the
 # held-out SQL test split.
 #
-# One GPU is plenty: 27B in bf16 is ~52GB against 275GB of HBM, and the models
+# One GPU is plenty: 27B in bf16 is ~52GB against 268.6 GiB of HBM, and the models
 # are loaded one at a time.
 #
 # Every argument is passed straight through to evaluate.py, so any flag it
