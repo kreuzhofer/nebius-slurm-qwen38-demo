@@ -240,7 +240,22 @@ the H100-era version of this demo, full fine-tuning a *smaller* 32B model OOM'd
 on 16×80 GB and had to fall back to LoRA. Here, sharded full SFT of 27B costs
 roughly 20 GiB per GPU (54 GB bf16 params + 54 GB grads + 216 GB fp32 AdamW
 states, sharded 16 ways), or ~28 GiB with fp32 master weights, against **268.6 GiB**
-of HBM per GPU — about **7.4%** of each card. LoRA is now a choice about iteration speed and adapter portability
+of HBM per GPU.
+
+**That arithmetic counts only parameter, gradient and optimizer states — not
+activations — so treat it as a floor.** Measured on the full LoRA epoch (rank 0,
+`torch.cuda.max_memory_allocated`): **29.08 GiB allocated, 63.83 GiB reserved**.
+LoRA holds only ~3.2 GiB of sharded base weights plus a negligible adapter, so
+roughly **25.6 GiB of that is activations and workspace** at
+`PER_DEVICE_BATCH_SIZE=8`, `MAX_SEQ_LEN=1024`, with activation checkpointing on.
+Full fine-tuning pays the same activation cost on top of its states, so expect
+**~46 GiB/GPU allocated**, about **17%** of a card — still enormous headroom,
+but more than double the number the states-only calculation suggests.
+
+Note also the gap between *allocated* and *reserved*: PyTorch's caching
+allocator held 63.83 GiB while only 29.08 GiB was live, and `nvidia-smi` showed
+~50 GiB average with 68 GiB peaks during the same run. When comparing against a
+prediction, be clear which of the three numbers you are looking at. LoRA is now a choice about iteration speed and adapter portability
 rather than a workaround.
 
 The one place full fine-tuning still costs you is checkpointing: a
